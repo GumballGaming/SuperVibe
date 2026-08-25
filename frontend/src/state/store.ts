@@ -122,8 +122,10 @@ export function messagesToItems(msgs: Message[]): ChatItem[] {
           type: "tool",
           key: meta.id || `t_${m.id}`,
           name: m.content || "tool",
+          action: toolAction(m.content || "tool"),
           input: meta.input,
           running: true,
+          status: "running",
         };
         toolByKey.set(item.type === "tool" ? item.key : "", item);
         items.push(item);
@@ -134,6 +136,7 @@ export function messagesToItems(msgs: Message[]): ChatItem[] {
         if (existing && existing.type === "tool") {
           existing.result = meta.result;
           existing.running = false;
+          existing.status = "success";
         } else {
           const item: ChatItem = {
             id: `db_${m.id}`,
@@ -142,6 +145,7 @@ export function messagesToItems(msgs: Message[]): ChatItem[] {
             name: "tool",
             result: meta.result,
             running: false,
+            status: "success",
           };
           items.push(item);
         }
@@ -240,9 +244,11 @@ export function reduceEvent(
           type: "tool",
           key: ev.partId || id,
           name: ev.toolName || "tool",
+          action: toolAction(ev.toolName || "tool"),
           input: ev.toolInput,
           result: ev.toolResult,
-          running: !ev.toolResult,
+          running: !toolFinished(ev),
+          status: toolFinished(ev) ? "success" : "running",
         };
         if (idx >= 0) items[idx] = toolItem;
         else items.push(toolItem);
@@ -261,8 +267,10 @@ export function reduceEvent(
         type: "tool",
         key: ev.toolCallId || nextItemId(),
         name: ev.toolName || "tool",
+        action: toolAction(ev.toolName || "tool"),
         input: ev.toolInput,
         running: true,
+        status: "running",
       });
       break;
     case "tool_end": {
@@ -270,7 +278,7 @@ export function reduceEvent(
       for (let i = items.length - 1; i >= 0; i--) {
         const it = items[i];
         if (it.type === "tool" && it.key === key && it.running) {
-          items[i] = { ...it, result: ev.toolResult, running: false };
+          items[i] = { ...it, result: ev.toolResult, running: false, status: "success" };
           return { toast, lastMessage };
         }
       }
@@ -281,6 +289,7 @@ export function reduceEvent(
         name: "tool",
         result: ev.toolResult,
         running: false,
+        status: "success",
       });
       break;
     }
@@ -310,6 +319,20 @@ export function reduceEvent(
       break;
   }
   return { toast, lastMessage };
+}
+
+function toolFinished(ev: AgentEvent): boolean {
+  return Boolean(ev.toolResult) || ev.status === "completed" || ev.status === "success" || ev.status === "error";
+}
+
+export function toolAction(name: string): string {
+  const value = name.toLowerCase();
+  if (value.includes("command") || value === "shell" || value.includes("bash") || value.includes("exec")) return "Running command";
+  if (value.includes("edit") || value.includes("write") || value.includes("patch") || value.includes("file")) return "Editing files";
+  if (value.includes("search") || value.includes("grep") || value.includes("glob")) return "Searching files";
+  if (value.includes("web") || value.includes("browser")) return "Searching the web";
+  if (value.includes("mcp")) return "Calling MCP tool";
+  return "Using tool";
 }
 
 function normalizeStatus(status: string, current: Session["status"]): Session["status"] {

@@ -22,6 +22,7 @@ import DiffView from "./DiffView";
 import OutputView from "./OutputView";
 import PermCard from "./PermCard";
 import { providerLabel, truncate } from "../lib/format";
+import { toolAction } from "../state/store";
 
 export default function Workspace() {
   const selectedWorktreeId = useStore((s) => s.selectedWorktreeId);
@@ -404,14 +405,17 @@ function ChatRow({ item }: { item: ChatItem }) {
 
 function ToolRow({ item }: { item: Extract<ChatItem, { type: "tool" }> }) {
   const preview = firstLine(item.input || item.result || "");
+  const action = item.action || toolAction(item.name);
   return (
-    <details className="tool-row">
+    <details className={`tool-row tool-row--${item.status || (item.running ? "running" : "success")}`}>
       <summary className="tool-row__summary">
         <Wrench size={12.5} className={item.running ? "tool-row__spin" : undefined} />
+        <span className="tool-row__action">{action}</span>
         <span className="tool-row__name">{item.name}</span>
         <span className="tool-row__preview">{preview}</span>
       </summary>
       <div className="tool-row__body">
+        <div className="tool-row__meta">{item.running ? "In progress" : item.status === "error" ? "Failed" : "Completed"}</div>
         {item.input ? (
           <>
             <div className="code-chunk code-chunk--label">Input</div>

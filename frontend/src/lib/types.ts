@@ -110,6 +110,7 @@ export interface ModelInfo {
   contextWindow?: number;
   suggested?: boolean;
   fastMode?: boolean;
+  reasoningEfforts?: string[];
 }
 
 export interface Capabilities {
@@ -236,7 +237,7 @@ export interface SessionEvent {
 export type ChatItem =
   | { id: string; type: "user"; text: string; ts: number }
   | { id: string; type: "assistant" | "thinking" | "system"; text: string; ts: number; streaming?: boolean }
-  | { id: string; type: "tool"; key: string; name: string; input?: string; result?: string; running: boolean }
+  | { id: string; type: "tool"; key: string; name: string; action?: string; input?: string; result?: string; running: boolean; status?: "running" | "success" | "error" }
   | { id: string; type: "files"; paths: string[]; ts: number };
 
 export interface Draft {
