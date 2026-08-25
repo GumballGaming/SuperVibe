@@ -1,0 +1,72 @@
+﻿#:schema https://json.schemastore.org/any.json
+
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  bin = "./tmp/main.exe"
+  # Rebuild the embedded frontend before rebuilding the Go executable.
+  cmd = "bun run --cwd frontend build && go build -tags dev -gcflags \"all=-N -l\" -o ./tmp/main.exe ."
+  entrypoint = ["./tmp/main.exe"]
+  delay = 800
+
+  # Watch both backend and embedded frontend source files.
+  include_ext = ["go", "ts", "tsx", "js", "jsx", "css", "html", "json"]
+  include_dir = []
+  include_file = []
+
+  exclude_dir = [
+    "node_modules",
+    "frontend/node_modules",
+    "dist",
+    "frontend/dist",
+    "wailsjs",
+    "frontend/wailsjs",
+    "tmp",
+    "vendor",
+    "testdata",
+    "assets",
+    "docs",
+    "build",
+    ".git"
+  ]
+
+  exclude_file = []
+  exclude_regex = [
+    "_test\\.go$",
+    "frontend[\\\\/]node_modules[\\\\/].*",
+    "frontend[\\\\/]dist[\\\\/].*",
+    "frontend[\\\\/]wailsjs[\\\\/].*"
+  ]
+
+  exclude_unchanged = true
+  follow_symlink = false
+  kill_delay = "2s"
+  log = "build-errors.log"
+  poll = false
+  rerun = false
+  send_interrupt = true
+  stop_on_error = true
+
+[build.windows]
+  # Air stops the old process before this command. Remove its locked binary
+  # explicitly so the next build always starts from a clean executable path.
+  pre_cmd = ['cmd.exe /d /c "if exist tmp\main.exe del /f /q tmp\main.exe"']
+
+[color]
+  build = "yellow"
+  main = "magenta"
+  runner = "green"
+  watcher = "cyan"
+
+[log]
+  main_only = false
+  silent = false
+  time = false
+
+[misc]
+  clean_on_exit = true
+
+[screen]
+  clear_on_rebuild = false
+  keep_scroll = true
