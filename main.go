@@ -18,15 +18,22 @@ func main() {
 	a := app.NewApp()
 
 	err := wails.Run(&options.App{
-		Title:            "SuperVibe",
-		Width:            1440,
-		Height:           920,
-		MinWidth:         1000,
-		MinHeight:        640,
-		Frameless:        true,
-		BackgroundColour: &options.RGBA{R: 13, G: 13, B: 14, A: 255},
+		Title:             "SuperVibe",
+		Width:             1440,
+		Height:            920,
+		MinWidth:          1000,
+		MinHeight:         640,
+		Frameless:         true,
+		HideWindowOnClose: true,
+		BackgroundColour:  &options.RGBA{R: 13, G: 13, B: 14, A: 255},
 		AssetServer: &assetserver.Options{
 			Assets: assets,
+		},
+		SingleInstanceLock: &options.SingleInstanceLock{
+			UniqueId: "supervibe-desktop",
+			OnSecondInstanceLaunch: func(options.SecondInstanceData) {
+				a.ShowWindow()
+			},
 		},
 		OnStartup:  a.Startup,
 		OnShutdown: a.Shutdown,

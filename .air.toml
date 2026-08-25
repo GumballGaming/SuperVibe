@@ -15,13 +15,15 @@ tmp_dir = "tmp"
   include_dir = []
   include_file = []
 
+  # Air compares excluded paths literally; use Windows separators for the
+  # nested directories so they are pruned before watcher registration.
   exclude_dir = [
     "node_modules",
-    "frontend/node_modules",
+    "frontend\\node_modules",
     "dist",
-    "frontend/dist",
+    "frontend\\dist",
     "wailsjs",
-    "frontend/wailsjs",
+    "frontend\\wailsjs",
     "tmp",
     "vendor",
     "testdata",
@@ -32,9 +34,11 @@ tmp_dir = "tmp"
   ]
 
   exclude_file = []
+  # Belt-and-suspenders: exclude every node_modules path, including nested
+  # workspaces and platform-specific path separators.
   exclude_regex = [
     "_test\\.go$",
-    "frontend[\\\\/]node_modules[\\\\/].*",
+    '(^|[\\/])node_modules([\\/].*)?$',
     "frontend[\\\\/]dist[\\\\/].*",
     "frontend[\\\\/]wailsjs[\\\\/].*"
   ]
@@ -49,6 +53,9 @@ tmp_dir = "tmp"
   stop_on_error = true
 
 [build.windows]
+  # Air executes build commands through Windows PowerShell. Use PowerShell's
+  # explicit exit-code check instead of POSIX/cmd.exe && chaining.
+  cmd = "bun run --cwd frontend build; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; go build -tags dev -gcflags \"all=-N -l\" -o ./tmp/main.exe ."
   # Air stops the old process before this command. Remove its locked binary
   # explicitly so the next build always starts from a clean executable path.
   pre_cmd = ['cmd.exe /d /c "if exist tmp\main.exe del /f /q tmp\main.exe"']

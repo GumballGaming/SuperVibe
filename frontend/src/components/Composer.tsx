@@ -1,11 +1,31 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Paperclip, RefreshCw, Square, X, Zap } from "lucide-react";
+import { ArrowUp, BrainCircuit, Paperclip, RefreshCw, Sparkles, Square, X, Zap } from "lucide-react";
 import { api, openFileDialog } from "../lib/backend";
 import { parseMentions } from "../lib/format";
 import Dropdown from "./Dropdown";
 import { useStore } from "../state/store";
 
 const MENTION_TOKENS = ["diff", "git", "tree"];
+const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
+const DEFAULT_REASONING_EFFORTS = ["off", "low", "medium", "high"];
+const CLAUDE_REASONING_EFFORTS = ["off", "low", "medium", "high", "xhigh", "max", "ultracode"];
+const CODEX_REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"];
+const REASONING_LABELS: Record<string, string> = {
+  off: "Off",
+  none: "None",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra High",
+  max: "Max",
+  ultracode: "UltraCode",
+};
+
+function reasoningEffortsFor(provider: string | undefined, efforts?: string[]): string[] {
+  if (efforts && efforts.length > 0) return efforts;
+  if (provider === "claude") return CLAUDE_REASONING_EFFORTS;
+  return provider === "codex" ? CODEX_REASONING_EFFORTS : DEFAULT_REASONING_EFFORTS;
+}
 
 export default function Composer({ sessionId, busy }: { sessionId: string; busy: boolean }) {
   const [text, setText] = useState("");
@@ -24,7 +44,7 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
   const ensureCaps = useStore((s) => s.ensureCaps);
   const loadModels = useStore((s) => s.loadModels);
   const provider = session?.provider;
-  const [selectedModel, setSelectedModel] = useState(session?.model || "");
+  const [selectedModel, setSelectedModel] = useState(session?.model || (session?.provider === "codex" ? DEFAULT_CODEX_MODEL : ""));
   const [thinking, setThinking] = useState("medium");
   const [fastMode, setFastMode] = useState(false);
   const [refreshingModels, setRefreshingModels] = useState(false);
@@ -39,20 +59,33 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
   const models = provider ? modelsMap[provider] || [] : [];
   const showAttach = caps ? caps.images || caps.fileEdit : true;
   const modelOptions = [
-    { value: "", label: "Default" },
+    ...(provider === "codex" ? [] : [{ value: "", label: "Default" }]),
     ...(selectedModel && !models.some((m) => m.id === selectedModel)
       ? [{ value: selectedModel, label: selectedModel }]
       : []),
     ...models
       .filter((modelInfo, index, all) => all.findIndex((candidate) => candidate.id === modelInfo.id) === index)
-      .map((m) => ({ value: m.id, label: `${m.label}${m.fastMode ? " · Fast" : ""}` })),
+      .map((m) => ({ value: m.id, label: m.label })),
   ];
   useEffect(() => {
-    setSelectedModel(session?.model || "");
+    setSelectedModel(session?.model || (session?.provider === "codex" ? DEFAULT_CODEX_MODEL : ""));
     setThinking("medium");
     setFastMode(false);
-  }, [sessionId, session?.model]);
+  }, [sessionId, session?.model, session?.provider]);
   const selectedModelInfo = models.find((modelInfo) => modelInfo.id === selectedModel);
+  const reasoningEfforts = reasoningEffortsFor(provider, selectedModelInfo?.reasoningEfforts);
+  const reasoningOptions = reasoningEfforts.map((value) => ({
+    value,
+    label: provider === "claude" && value === "xhigh" ? "XHigh" : REASONING_LABELS[value] ?? value,
+  }));
+  const selectModel = (nextModel: string) => {
+    setSelectedModel(nextModel);
+    const nextInfo = models.find((modelInfo) => modelInfo.id === nextModel);
+    const nextEfforts = reasoningEffortsFor(provider, nextInfo?.reasoningEfforts);
+    setThinking((current) =>
+      nextEfforts.includes(current) ? current : nextEfforts.includes("medium") ? "medium" : nextEfforts[0] ?? "",
+    );
+  };
   const supportsFastMode = Boolean(provider) && (!selectedModel || selectedModelInfo?.fastMode === true);
 
   useEffect(() => {
@@ -148,7 +181,13 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
     const request =
       attachments.length > 0
         ? api.sendMessageExtended(sessionId, trimmed, mentions, attachments)
-        : api.sendMessageConfigured(sessionId, trimmed, selectedModel.trim(), thinking, fastMode && supportsFastMode);
+        : api.sendMessageConfigured(
+            sessionId,
+            trimmed,
+            selectedModel.trim(),
+            provider === "claude" && thinking === "ultracode" ? "max" : thinking,
+            fastMode && supportsFastMode,
+          );
     request.catch((e) => {
       const msg = String(e);
       if (/unavailable/i.test(msg) && attachments.length === 0) {
@@ -163,7 +202,12 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
 
   return (
     <div className="composer">
-      <div className="composer__inner" style={{ position: "relative" }}>
+      <div
+        className={`composer__inner${fastMode ? " composer__inner--fast" : ""}${
+          provider === "claude" && thinking === "ultracode" ? " composer__inner--ultracode" : ""
+        }`}
+        style={{ position: "relative" }}
+      >
         {showAttach && (
           <button className="icon-btn" style={{ marginBottom: 2 }} title="Attach files" onClick={() => void pickFiles()}>
             <Paperclip size={14} />
@@ -224,12 +268,15 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
             }}
           />
           <div className="composer__controls">
-            <label className="composer__control" title="Model used for the next message">
-              <span>Model</span>
+            <label className="composer__control composer__control--model" title="Model used for the next message">
+              <span className="composer__control-label">
+                <Sparkles size={12} />
+                <span>Model</span>
+              </span>
               <Dropdown
                 value={selectedModel}
                 options={modelOptions}
-                onChange={setSelectedModel}
+                onChange={selectModel}
                 disabled={!provider}
                 className="composer__dropdown"
                 ariaLabel="Model"
@@ -248,16 +295,19 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
               </button>
             )}
             {caps?.reasoningControls && (
-              <label className="composer__control" title="Reasoning effort for the next message">
-                <span>Thinking</span>
+              <label
+                className={`composer__control composer__control--thinking${
+                  provider === "claude" && thinking === "ultracode" ? " composer__control--ultracode" : ""
+                }`}
+                title="Reasoning effort for the next message"
+              >
+                <span className="composer__control-label">
+                  <BrainCircuit size={12} />
+                  <span>Thinking</span>
+                </span>
                 <Dropdown
                   value={thinking}
-                  options={[
-                    { value: "off", label: "Off" },
-                    { value: "low", label: "Low" },
-                    { value: "medium", label: "Medium" },
-                    { value: "high", label: "High" },
-                  ]}
+                  options={reasoningOptions}
                   onChange={setThinking}
                   className="composer__dropdown"
                   ariaLabel="Thinking effort"

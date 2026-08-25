@@ -191,6 +191,47 @@ func TestSessionPipelinePersistence(t *testing.T) {
 	}
 }
 
+func TestReattachCodex(t *testing.T) {
+	st := openStore(t)
+	s, _, _ := newTestSupervisor(t, st)
+	p, err := st.CreateProject("codex-project", "C:\\codex")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	wt := &store.Worktree{ProjectID: p.ID, Name: "main", Branch: "main", Path: "C:\\codex"}
+	if err := st.UpsertWorktree(wt); err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	sess := &store.Session{
+		ID:         "codex-session",
+		WorktreeID: wt.ID,
+		Provider:   string(agent.ProviderCodex),
+		Model:      "gpt-5.6-sol",
+		Status:     "idle",
+	}
+	if err := st.CreateSession(sess); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	if err := s.ReattachCodex(context.Background(), sess, agent.Options{}); err != nil {
+		t.Fatalf("reattach Codex: %v", err)
+	}
+	s.mu.Lock()
+	_, attached := s.sessions[sess.ID]
+	s.mu.Unlock()
+	if !attached {
+		t.Fatal("Codex session was not attached")
+	}
+	got, err := st.GetSession(sess.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if got.Status != "idle" {
+		t.Fatalf("status = %q, want idle", got.Status)
+	}
+	_ = s.StopSession(sess.ID)
+}
+
 func TestUnexpectedExitMarksError(t *testing.T) {
 	st := openStore(t)
 	s, _, _ := newTestSupervisor(t, st)

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -91,8 +92,8 @@ func TestSuggestionsFor(t *testing.T) {
 		provider string
 		wantIDs  []string
 	}{
-		{"claude", "claude", []string{"claude-sonnet-4-5", "claude-opus-4-6", "claude-opus-4-8", "claude-opus-5", "claude-haiku-4-5"}},
-		{"codex", "codex", []string{"gpt-5-codex", "gpt-5.6-sol", "gpt-5.6-terra", "o4-mini"}},
+		{"claude", "claude", []string{"claude-sonnet-5", "claude-opus-5", "claude-fable-5", "claude-haiku-4-5"}},
+		{"codex", "codex", []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"}},
 		{"opencode", "opencode", nil},
 		{"unknown", "nope", nil},
 	}
@@ -117,6 +118,82 @@ func TestSuggestionsFor(t *testing.T) {
 				t.Fatalf("unknown provider suggestions = %+v, want nil", got)
 			}
 		})
+	}
+}
+func TestCodexSuggestionLabels(t *testing.T) {
+	want := []string{
+		"GPT-5.6 Sol",
+		"GPT-5.6 Terra",
+		"GPT-5.6 Luna",
+		"GPT-5.5",
+		"GPT-5.4",
+		"GPT-5.4 Mini",
+	}
+	got := SuggestionsFor("codex")
+	if len(got) != len(want) {
+		t.Fatalf("codex suggestion count = %d, want %d", len(got), len(want))
+	}
+	for i, model := range got {
+		if model.Label != want[i] {
+			t.Errorf("codex suggestion %d label = %q, want %q", i, model.Label, want[i])
+		}
+		if strings.Contains(strings.ToLower(model.Label), "fast") {
+			t.Errorf("codex suggestion %d exposes Fast in label %q", i, model.Label)
+		}
+	}
+}
+
+func TestParseClaudeModels(t *testing.T) {
+	got, err := parseClaudeModels("Current model: Opus 5 (default)\nUsage: /model <name>. Available: sonnet, opus, haiku, fable, best, sonnet[1m], opus[1m], opusplan, default, or a full model ID.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"claude-sonnet-5", "claude-opus-5", "claude-fable-5", "claude-haiku-4-5"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d models, want %d (%+v)", len(got), len(want), got)
+	}
+	for i, model := range got {
+		if model.Provider != "claude" || model.ID != want[i] {
+			t.Errorf("model %d = %+v, want provider claude and id %q", i, model, want[i])
+		}
+	}
+	if got[0].Label != "Claude Sonnet 5" || got[2].Label != "Claude Fable 5" {
+		t.Errorf("unexpected Claude labels: %+v", got)
+	}
+}
+
+func TestDiscoverClaude(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Claude Code command fixture uses a Windows cmd script")
+	}
+	dir := t.TempDir()
+	script := writeCmdScript(t, dir, "claude-models.cmd",
+		"@echo off",
+		`echo {"result":"Usage: /model. Available: sonnet, opus, default, or a full model ID.","is_error":false}`,
+	)
+	got, err := DiscoverClaude(context.Background(), script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != "claude-sonnet-5" || got[1].ID != "claude-opus-5" {
+		t.Fatalf("got %+v, want claude-sonnet-5/claude-opus-5", got)
+	}
+}
+func TestCodexReasoningEfforts(t *testing.T) {
+	want56 := []string{"none", "low", "medium", "high", "xhigh", "max"}
+	want55 := []string{"none", "low", "medium", "high", "xhigh"}
+	want := map[string][]string{
+		"gpt-5.6-sol":   want56,
+		"gpt-5.6-terra": want56,
+		"gpt-5.6-luna":  want56,
+		"gpt-5.5":       want55,
+		"gpt-5.4":       want55,
+		"gpt-5.4-mini":  want55,
+	}
+	for _, model := range SuggestionsFor("codex") {
+		if !reflect.DeepEqual(model.ReasoningEfforts, want[model.ID]) {
+			t.Errorf("%s reasoning efforts = %#v, want %#v", model.ID, model.ReasoningEfforts, want[model.ID])
+		}
 	}
 }
 

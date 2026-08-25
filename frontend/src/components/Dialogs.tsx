@@ -191,6 +191,7 @@ function NewWorktree({ projectId }: { projectId: string }) {
 }
 
 const PROVIDERS: Provider[] = ["claude", "codex", "opencode"];
+const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
 
 function NewSession({ worktreeId }: { worktreeId: string }) {
   const clis = useStore((s) => s.clis);
@@ -202,14 +203,14 @@ function NewSession({ worktreeId }: { worktreeId: string }) {
     for (const p of PROVIDERS) if (clis[p]) return p;
     return "claude";
   });
-  const [model, setModel] = useState("");
+  const [model, setModel] = useState(() => (provider === "codex" ? DEFAULT_CODEX_MODEL : ""));
   const newSessionSelected = useStore((s) => s.newSessionSelected);
   const openSession = useStore((s) => s.openSession);
   const pushToast = useStore((s) => s.pushToast);
   const setDialog = useStore((s) => s.setDialog);
 
   useEffect(() => {
-    setModel("");
+    setModel(provider === "codex" ? DEFAULT_CODEX_MODEL : "");
     void ensureCaps(provider);
     void loadModels(provider);
   }, [provider, ensureCaps, loadModels]);
@@ -258,7 +259,7 @@ function NewSession({ worktreeId }: { worktreeId: string }) {
               <ProviderLogo provider={p} size={22} />
               <span className="provider-card__copy">
                 <span className="provider-name">{providerLabel(p)}</span>
-                <span className="provider-status">{clis[p] === false ? "not found" : "\u00A0"}</span>
+                <span className="provider-status">{clis[p] === false ? "not found" : null}</span>
               </span>
             </button>
           ))}
@@ -273,8 +274,8 @@ function NewSession({ worktreeId }: { worktreeId: string }) {
                 style={{ flex: 1 }}
                 value={model}
                 options={[
-                  { value: "", label: "Default model" },
-                  ...models.map((m) => ({ value: m.id, label: `${m.label}${m.fastMode ? " · Fast" : ""}` })),
+                  ...(provider === "codex" ? [] : [{ value: "", label: "Default model" }]),
+                  ...models.map((m) => ({ value: m.id, label: m.label })),
                 ]}
                 onChange={setModel}
                 ariaLabel="Model"
@@ -661,7 +662,7 @@ function SubagentDialog({ sessionId }: { sessionId: string }) {
               <ProviderLogo provider={p} size={22} />
               <span className="provider-card__copy">
                 <span className="provider-name">{providerLabel(p)}</span>
-                <span className="provider-status">{clis[p] === false ? "not found" : "\u00A0"}</span>
+                <span className="provider-status">{clis[p] === false ? "not found" : null}</span>
               </span>
             </button>
           ))}

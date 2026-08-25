@@ -24,12 +24,13 @@ const (
 )
 
 type ModelInfo struct {
-	Provider      string `json:"provider"`
-	ID            string `json:"id"`
-	Label         string `json:"label"`
-	ContextWindow int64  `json:"contextWindow,omitempty"`
-	Suggested     bool   `json:"suggested,omitempty"`
-	FastMode      bool   `json:"fastMode,omitempty"`
+	Provider         string   `json:"provider"`
+	ID               string   `json:"id"`
+	Label            string   `json:"label"`
+	ContextWindow    int64    `json:"contextWindow,omitempty"`
+	Suggested        bool     `json:"suggested,omitempty"`
+	FastMode         bool     `json:"fastMode,omitempty"`
+	ReasoningEfforts []string `json:"reasoningEfforts,omitempty"`
 }
 
 type ModelSelection string
@@ -73,19 +74,23 @@ type Health struct {
 	Detail   string      `json:"detail,omitempty"`
 }
 
+var gpt56ReasoningEfforts = []string{"none", "low", "medium", "high", "xhigh", "max"}
+var gpt55ReasoningEfforts = []string{"none", "low", "medium", "high", "xhigh"}
+
 var suggestedByProvider = map[string][]ModelInfo{
 	"claude": {
-		{Provider: "claude", ID: "claude-sonnet-4-5", Label: "Claude Sonnet 4.5", Suggested: true},
-		{Provider: "claude", ID: "claude-opus-4-6", Label: "Claude Opus 4.6", Suggested: true},
-		{Provider: "claude", ID: "claude-opus-4-8", Label: "Claude Opus 4.8", Suggested: true, FastMode: true},
+		{Provider: "claude", ID: "claude-sonnet-5", Label: "Claude Sonnet 5", Suggested: true},
 		{Provider: "claude", ID: "claude-opus-5", Label: "Claude Opus 5", Suggested: true, FastMode: true},
+		{Provider: "claude", ID: "claude-fable-5", Label: "Claude Fable 5", Suggested: true},
 		{Provider: "claude", ID: "claude-haiku-4-5", Label: "Claude Haiku 4.5", Suggested: true},
 	},
 	"codex": {
-		{Provider: "codex", ID: "gpt-5-codex", Label: "GPT-5 Codex", Suggested: true},
-		{Provider: "codex", ID: "gpt-5.6-sol", Label: "GPT-5.6 Sol", Suggested: true, FastMode: true},
-		{Provider: "codex", ID: "gpt-5.6-terra", Label: "GPT-5.6 Terra", Suggested: true, FastMode: true},
-		{Provider: "codex", ID: "o4-mini", Label: "o4-mini", Suggested: true},
+		{Provider: "codex", ID: "gpt-5.6-sol", Label: "GPT-5.6 Sol", Suggested: true, FastMode: true, ReasoningEfforts: gpt56ReasoningEfforts},
+		{Provider: "codex", ID: "gpt-5.6-terra", Label: "GPT-5.6 Terra", Suggested: true, FastMode: true, ReasoningEfforts: gpt56ReasoningEfforts},
+		{Provider: "codex", ID: "gpt-5.6-luna", Label: "GPT-5.6 Luna", Suggested: true, FastMode: true, ReasoningEfforts: gpt56ReasoningEfforts},
+		{Provider: "codex", ID: "gpt-5.5", Label: "GPT-5.5", Suggested: true, ReasoningEfforts: gpt55ReasoningEfforts},
+		{Provider: "codex", ID: "gpt-5.4", Label: "GPT-5.4", Suggested: true, ReasoningEfforts: gpt55ReasoningEfforts},
+		{Provider: "codex", ID: "gpt-5.4-mini", Label: "GPT-5.4 Mini", Suggested: true, ReasoningEfforts: gpt55ReasoningEfforts},
 	},
 }
 
@@ -159,7 +164,155 @@ func SuggestionsFor(provider string) []ModelInfo {
 	}
 	out := make([]ModelInfo, len(list))
 	copy(out, list)
+	for i := range out {
+		if list[i].ReasoningEfforts != nil {
+			out[i].ReasoningEfforts = append([]string(nil), list[i].ReasoningEfforts...)
+		}
+	}
 	return out
+}
+
+type claudeModelResponse struct {
+	Result  string `json:"result"`
+	IsError bool   `json:"is_error"`
+}
+
+// DiscoverClaude asks Claude Code's non-interactive /model command for the
+// model aliases available to the authenticated account.
+func DiscoverClaude(ctx context.Context, bin string) ([]ModelInfo, error) {
+	exe, err := resolveExecutable(bin)
+	if err != nil {
+		return nil, fmt.Errorf("claude model list: %w", err)
+	}
+
+	cctx, cancel := context.WithTimeout(ctx, discoverTimeout)
+	defer cancel()
+
+	var stdout, stderr bytes.Buffer
+	cmd := claudeModelCommand(cctx, exe)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		detail := truncate(combineOutput(stdout.String(), stderr.String()), detailMaxRunes)
+		if detail == "" {
+			detail = err.Error()
+		}
+		return nil, fmt.Errorf("claude model list: %s", detail)
+	}
+
+	var response claudeModelResponse
+	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
+		return nil, fmt.Errorf("claude model list: parse output: %w", err)
+	}
+	if response.IsError {
+		return nil, fmt.Errorf("claude model list: %s", truncate(response.Result, detailMaxRunes))
+	}
+	return parseClaudeModels(response.Result)
+}
+
+func parseClaudeModels(result string) ([]ModelInfo, error) {
+	const marker = "available:"
+	lower := strings.ToLower(result)
+	start := strings.Index(lower, marker)
+	if start < 0 {
+		return nil, fmt.Errorf("claude model list: output did not contain available models")
+	}
+	available := strings.TrimSpace(result[start+len(marker):])
+	if end := strings.Index(strings.ToLower(available), " or a full model id"); end >= 0 {
+		available = available[:end]
+	}
+	available = strings.TrimSpace(strings.TrimSuffix(available, "."))
+
+	found := make(map[string]ModelInfo, 4)
+	for _, rawID := range strings.Split(available, ",") {
+		id := strings.Trim(strings.TrimSpace(rawID), "`")
+		canonical, ok := canonicalClaudeModel(id)
+		if !ok {
+			continue
+		}
+		if _, ok := found[canonical]; ok {
+			continue
+		}
+		found[canonical] = ModelInfo{
+			Provider:  "claude",
+			ID:        canonical,
+			Label:     claudeModelLabel(canonical),
+			Suggested: true,
+		}
+	}
+	if len(found) == 0 {
+		return nil, fmt.Errorf("claude model list: no supported models in output")
+	}
+	models := make([]ModelInfo, 0, len(found))
+	for _, canonical := range []string{
+		"claude-sonnet-5",
+		"claude-opus-5",
+		"claude-fable-5",
+		"claude-haiku-4-5",
+	} {
+		if model, ok := found[canonical]; ok {
+			models = append(models, model)
+		}
+	}
+	return models, nil
+}
+
+func canonicalClaudeModel(id string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(id)) {
+	case "sonnet", "sonnet[1m]", "claude-sonnet-5":
+		return "claude-sonnet-5", true
+	case "opus", "opus[1m]", "claude-opus-5":
+		return "claude-opus-5", true
+	case "fable", "fable[1m]", "claude-fable-5":
+		return "claude-fable-5", true
+	case "haiku", "claude-haiku-4-5", "claude-haiku-4-5-20251001":
+		return "claude-haiku-4-5", true
+	default:
+		return "", false
+	}
+}
+
+func claudeModelLabel(id string) string {
+	switch strings.ToLower(id) {
+	case "claude-sonnet-5":
+		return "Claude Sonnet 5"
+	case "claude-opus-5":
+		return "Claude Opus 5"
+	case "claude-fable-5":
+		return "Claude Fable 5"
+	case "claude-haiku-4-5":
+		return "Claude Haiku 4.5"
+	default:
+		return id
+	}
+}
+
+func resolveExecutable(bin string) (string, error) {
+	bin = strings.TrimSpace(bin)
+	if bin == "" {
+		return "", errors.New("empty Claude Code path")
+	}
+	if strings.ContainsAny(bin, `/\`) {
+		if fi, err := os.Stat(bin); err != nil || fi.IsDir() {
+			return "", fmt.Errorf("Claude Code executable %q is unavailable", bin)
+		}
+		return bin, nil
+	}
+	exe, err := exec.LookPath(bin)
+	if err != nil {
+		return "", fmt.Errorf("Claude Code executable %q is unavailable", bin)
+	}
+	return exe, nil
+}
+
+func claudeModelCommand(ctx context.Context, exe string) *exec.Cmd {
+	args := []string{"-p", "/model", "--output-format", "json", "--no-session-persistence"}
+	switch strings.ToLower(filepath.Ext(exe)) {
+	case ".bat", ".cmd":
+		return exec.CommandContext(ctx, "cmd", append([]string{"/c", exe}, args...)...)
+	default:
+		return exec.CommandContext(ctx, exe, args...)
+	}
 }
 
 type ocModelEntry struct {

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -36,6 +37,7 @@ type SessionEvent struct {
 }
 
 const eventTopic = "agent:event"
+const defaultCodexModel = "gpt-5.6-sol"
 
 var defaultSettings = map[string]string{
 	"paths.claude":          "",
@@ -108,12 +110,18 @@ func (a *App) Shutdown(ctx context.Context) {
 	}
 }
 
+func (a *App) ShowWindow() {
+	if a.ctx != nil {
+		runtime.WindowShow(a.ctx)
+	}
+}
+
 // OpenDirectoryDialog opens the native directory picker.
 func (a *App) OpenDirectoryDialog(title string) (string, error) {
 	if a.ctx == nil {
 		return "", fmt.Errorf("app not started")
 	}
-	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: title})
+	return openDirectoryDialog(a.ctx, title)
 }
 
 // OpenMultipleFilesDialog opens the native multi-file picker.
@@ -121,7 +129,7 @@ func (a *App) OpenMultipleFilesDialog(title string) ([]string, error) {
 	if a.ctx == nil {
 		return nil, fmt.Errorf("app not started")
 	}
-	return runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{Title: title})
+	return openMultipleFilesDialog(a.ctx, title)
 }
 
 func (a *App) writeOpencodeConfig() error {
@@ -360,22 +368,32 @@ func (a *App) DetectCLIs() (map[string]bool, error) {
 }
 
 func (a *App) ListModels(provider string) ([]modelsx.ModelInfo, error) {
-	if provider != string(agent.ProviderOpencode) {
-		return modelsx.SuggestionsFor(provider), nil
-	}
-	a.mu.Lock()
-	servers := make([]*agent.OpenCodeServer, 0, len(a.ocServers))
-	for _, srv := range a.ocServers {
-		servers = append(servers, srv)
-	}
-	a.mu.Unlock()
-	for _, srv := range servers {
-		models, err := modelsx.DiscoverOpencode(context.Background(), srv.BaseURL)
+	switch provider {
+	case string(agent.ProviderClaude):
+		settings, _ := a.GetSettings()
+		bin := firstNonEmpty(settings["paths.claude"], "claude")
+		models, err := modelsx.DiscoverClaude(context.Background(), bin)
 		if err == nil && len(models) > 0 {
 			return models, nil
 		}
+		return modelsx.SuggestionsFor(provider), nil
+	case string(agent.ProviderOpencode):
+		a.mu.Lock()
+		servers := make([]*agent.OpenCodeServer, 0, len(a.ocServers))
+		for _, srv := range a.ocServers {
+			servers = append(servers, srv)
+		}
+		a.mu.Unlock()
+		for _, srv := range servers {
+			models, err := modelsx.DiscoverOpencode(context.Background(), srv.BaseURL)
+			if err == nil && len(models) > 0 {
+				return models, nil
+			}
+		}
+		return []modelsx.ModelInfo{}, nil
+	default:
+		return modelsx.SuggestionsFor(provider), nil
 	}
-	return []modelsx.ModelInfo{}, nil
 }
 
 func (a *App) RefreshModels(provider string) ([]modelsx.ModelInfo, error) {
@@ -399,6 +417,7 @@ func lookPath(name string) bool {
 }
 
 func (a *App) StartSession(worktreeID, provider, model string) (*store.Session, error) {
+	model = defaultModel(provider, model)
 	opts, err := a.buildOptions(worktreeID, provider)
 	if err != nil {
 		return nil, err
@@ -459,7 +478,13 @@ func (a *App) ensureOpencodeServer(projectID, binPath string) (*agent.OpenCodeSe
 }
 
 func (a *App) SendMessage(sessionID, prompt string) error {
-	return a.sup.SendMessage(sessionID, prompt)
+	sess, err := a.store.GetSession(sessionID)
+	if err != nil {
+		return err
+	}
+	return a.sendWithRecovery(sess, prompt, agent.TurnOptions{
+		Model: defaultModel(sess.Provider, sess.Model),
+	})
 }
 
 func (a *App) SendMessageConfigured(sessionID, prompt, model, reasoningEffort string, fastMode bool) error {
@@ -467,6 +492,7 @@ func (a *App) SendMessageConfigured(sessionID, prompt, model, reasoningEffort st
 	if err != nil {
 		return err
 	}
+	model = defaultModel(sess.Provider, model)
 	if reasoningEffort == "off" {
 		reasoningEffort = ""
 	}
@@ -495,7 +521,33 @@ func (a *App) SendMessageConfigured(sessionID, prompt, model, reasoningEffort st
 		a.turnOptions[sessionID] = options
 		a.mu.Unlock()
 	}
-	return a.sup.SendMessageWithOptions(sessionID, prompt, options)
+	return a.sendWithRecovery(sess, prompt, options)
+}
+
+func (a *App) sendWithRecovery(sess *store.Session, prompt string, options agent.TurnOptions) error {
+	err := a.sup.SendMessageWithOptions(sess.ID, prompt, options)
+	if !errors.Is(err, supervisor.ErrUnknownSession) {
+		return err
+	}
+	opts, err := a.buildOptions(sess.WorktreeID, sess.Provider)
+	if err != nil {
+		return err
+	}
+	opts.Model = options.Model
+	opts.ReasoningEffort = options.ReasoningEffort
+	opts.FastMode = options.FastMode
+	switch sess.Provider {
+	case string(agent.ProviderCodex):
+		err = a.sup.ReattachCodex(a.ctx, sess, opts)
+	case string(agent.ProviderClaude):
+		err = a.sup.RestartClaude(sess.ID, opts)
+	default:
+		err = fmt.Errorf("session cannot be reattached for provider %q", sess.Provider)
+	}
+	if err != nil {
+		return err
+	}
+	return a.sup.SendMessageWithOptions(sess.ID, prompt, options)
 }
 
 func (a *App) InterruptSession(sessionID string) error {
@@ -604,6 +656,13 @@ func (a *App) SearchRepo(worktreeID, query string, limit int) ([]string, error) 
 		return nil, err
 	}
 	return contextx.FileSearch(wt.Path, query, limit)
+}
+
+func defaultModel(provider, model string) string {
+	if provider == string(agent.ProviderCodex) && strings.TrimSpace(model) == "" {
+		return defaultCodexModel
+	}
+	return model
 }
 
 func firstNonEmpty(vals ...string) string {

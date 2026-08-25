@@ -21,6 +21,7 @@ interface WailsRuntime {
   EventsOn: (name: string, cb: (...data: unknown[]) => void) => () => void;
   WindowMinimise: () => void;
   WindowToggleMaximise: () => void;
+  WindowHide: () => void;
   Quit: () => void;
 }
 
@@ -150,6 +151,6 @@ export function windowControls() {
   return {
     minimise: () => rt()?.WindowMinimise(),
     toggleMaximise: () => rt()?.WindowToggleMaximise(),
-    quit: () => rt()?.Quit(),
+    quit: () => rt()?.WindowHide(),
   };
 }

@@ -101,6 +101,31 @@ func (s *Supervisor) register(ctx context.Context, worktreeID, provider, model s
 	return sess, nil
 }
 
+// ReattachCodex restores a persisted Codex session after the supervisor has
+// been recreated, using Codex's cwd-scoped last-thread resume behavior.
+func (s *Supervisor) ReattachCodex(ctx context.Context, sess *store.Session, opts agent.Options) error {
+	if sess == nil || sess.Provider != string(agent.ProviderCodex) {
+		return fmt.Errorf("session is not a Codex session")
+	}
+	opts.ResumeProviderID = "resume"
+	ad := agent.NewCodex(opts)
+	if err := ad.Start(ctx); err != nil {
+		return err
+	}
+	lv := newLive(sess.ID, agent.ProviderCodex, ad)
+	s.mu.Lock()
+	if _, exists := s.sessions[sess.ID]; exists {
+		s.mu.Unlock()
+		return nil
+	}
+	s.sessions[sess.ID] = lv
+	s.mu.Unlock()
+	lv.attach(s)
+	_ = s.store.UpdateSessionStatus(sess.ID, "idle", "")
+	s.emit(sess.ID, agent.AgentEvent{Type: agent.EventStatus, Status: "idle"})
+	return nil
+}
+
 func newLive(id string, p agent.Provider, ad agent.Adapter) *live {
 	lv := &live{
 		id:       id,

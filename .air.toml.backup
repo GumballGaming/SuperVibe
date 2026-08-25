@@ -1,0 +1,106 @@
+#:schema https://json.schemastore.org/any.json
+
+env_files = []
+root = "."
+testdata_dir = "testdata"
+tmp_dir = "tmp"
+
+[build]
+  args_bin = []
+  bin = "./tmp/main.exe"
+
+  # Match Wails dev compilation.
+  cmd = "go build -tags dev -gcflags \"all=-N -l\" -o ./tmp/main.exe ."
+
+  delay = 800
+  entrypoint = ["./tmp/main.exe"]
+
+  exclude_dir = [
+    "node_modules",
+    "frontend/node_modules",
+    "dist",
+    "frontend/dist",
+    "wailsjs",
+    "frontend/wailsjs",
+    "tmp",
+    "vendor",
+    "testdata",
+    "assets",
+    "docs",
+    "build",
+    ".git"
+  ]
+
+  exclude_file = []
+  exclude_regex = [
+    "_test\\.go$"
+  ]
+
+  exclude_unchanged = true
+  follow_symlink = false
+  full_bin = ""
+
+  ignore_dangerous_root_dir = false
+
+  include_dir = []
+
+  # IMPORTANT:
+  # Air should only rebuild the Go app.
+  # Vite/Bun should watch TS/TSX/CSS/HTML separately.
+  include_ext = ["go"]
+
+  include_file = []
+
+  kill_delay = "2s"
+  log = "build-errors.log"
+
+  poll = false
+  poll_interval = 0
+
+  post_cmd = []
+  pre_cmd = []
+
+  rerun = false
+  rerun_delay = 500
+
+  send_interrupt = true
+  stop_on_error = true
+
+[build.windows]
+  args_bin = []
+  bin = "tmp\\main.exe"
+
+  # Correct Wails DEVELOPMENT tags.
+  cmd = "go build -tags dev -gcflags \"all=-N -l\" -o ./tmp/main.exe ."
+
+  entrypoint = ["tmp\\main.exe"]
+  full_bin = ""
+
+  post_cmd = []
+  pre_cmd = []
+
+[color]
+  app = ""
+  build = "yellow"
+  main = "magenta"
+  mode = ""
+  runner = "green"
+  watcher = "cyan"
+
+[log]
+  main_only = false
+  silent = false
+  time = false
+
+[misc]
+  clean_on_exit = false
+
+[proxy]
+  app_port = 0
+  app_start_timeout = 0
+  enabled = false
+  proxy_port = 0
+
+[screen]
+  clear_on_rebuild = false
+  keep_scroll = true
