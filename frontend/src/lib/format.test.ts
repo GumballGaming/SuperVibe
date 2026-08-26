@@ -29,6 +29,5 @@ describe("format", () => {
   test("providerLabel", () => {
     expect(providerLabel("claude")).toBe("Claude Code");
     expect(providerLabel("codex")).toBe("Codex");
-    expect(providerLabel("opencode")).toBe("opencode");
   });
 });

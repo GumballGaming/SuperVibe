@@ -7,8 +7,6 @@ import {
   GitFork,
   Network,
   Pencil,
-  Play,
-  Plus,
   TerminalSquare,
   Wrench,
   Copy,
@@ -157,15 +155,6 @@ export default function Workspace() {
             </>
           )}
         </div>
-        <div className="header-actions">
-          <button
-            className="btn btn--primary"
-            onClick={() => setDialog({ kind: "newSession", worktreeId: wt.worktree.id })}
-          >
-            <Plus size={14} />
-            New Session
-          </button>
-        </div>
       </div>
 
       <div className="tabs">
@@ -182,10 +171,7 @@ export default function Workspace() {
 
       <div className="workspace__content">
         {!session ? (
-          <FileTreeEmptyState
-            worktreeId={wt.worktree.id}
-            onStart={() => setDialog({ kind: "newSession", worktreeId: wt.worktree.id })}
-          />
+          <FileTreeEmptyState worktreeId={wt.worktree.id} />
         ) : tab === "chat" ? (
           <ChatPane sessionId={session.id} />
         ) : tab === "diff" ? (
@@ -199,13 +185,7 @@ export default function Workspace() {
 }
 
 
-function FileTreeEmptyState({
-  worktreeId,
-  onStart,
-}: {
-  worktreeId: string;
-  onStart: () => void;
-}) {
+function FileTreeEmptyState({ worktreeId }: { worktreeId: string }) {
   const [files, setFiles] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState<Record<string, boolean>>({});
@@ -249,12 +229,8 @@ function FileTreeEmptyState({
       <div className="file-tree-empty__header">
         <div>
           <div className="empty-title">Repository files</div>
-          <div className="empty-detail">Select a file to inspect it, or start an agent session.</div>
+          <div className="empty-detail">Select a file to inspect it, or start a new agent from the sidebar.</div>
         </div>
-        <button className="btn btn--primary" onClick={onStart}>
-          <Play size={13} />
-          Start Agent
-        </button>
       </div>
       <div className="file-tree">
         {loading ? (

@@ -31,6 +31,15 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const preventNativeContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+    };
+
+    window.addEventListener("contextmenu", preventNativeContextMenu);
+    return () => window.removeEventListener("contextmenu", preventNativeContextMenu);
+  }, []);
+
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -45,8 +54,23 @@ export default function App() {
       const ctrl = e.ctrlKey || e.metaKey;
       if (ctrl && (e.key === "n" || e.key === "N")) {
         e.preventDefault();
-        const worktreeId = st.selectedWorktreeId || st.projects[0]?.worktrees[0]?.id;
-        if (worktreeId) st.setDialog({ kind: "newSession", worktreeId });
+        let projectId = "";
+        let initialWorktreeId: string | undefined;
+        if (st.selectedWorktreeId) {
+          initialWorktreeId = st.selectedWorktreeId;
+          for (const pt of st.projects) {
+            if (pt.worktrees.some((w) => w.id === st.selectedWorktreeId)) {
+              projectId = pt.project.id;
+              break;
+            }
+          }
+        }
+        if (!projectId) {
+          const first = st.projects[0];
+          projectId = first?.project.id || "";
+          initialWorktreeId = first?.worktrees[0]?.id || undefined;
+        }
+        if (projectId) st.setDialog({ kind: "newAgent", projectId, initialWorktreeId });
         return;
       }
       if (ctrl && (e.key === "f" || e.key === "F")) {

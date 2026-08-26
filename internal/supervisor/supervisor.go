@@ -66,11 +66,6 @@ func (s *Supervisor) StartSession(ctx context.Context, worktreeID, provider, mod
 			return nil, fmt.Errorf("a codex session is already active in this worktree (%s)", existing.ID)
 		}
 		ad = agent.NewCodex(opts)
-	case agent.ProviderOpencode:
-		if opts.OpenCodeServer == nil {
-			return nil, errors.New("opencode server not available")
-		}
-		ad = agent.NewOpencode(opts)
 	default:
 		return nil, fmt.Errorf("unknown provider %q", provider)
 	}
@@ -102,12 +97,12 @@ func (s *Supervisor) register(ctx context.Context, worktreeID, provider, model s
 }
 
 // ReattachCodex restores a persisted Codex session after the supervisor has
-// been recreated, using Codex's cwd-scoped last-thread resume behavior.
+// been recreated, resuming the stored Codex thread when one was recorded.
 func (s *Supervisor) ReattachCodex(ctx context.Context, sess *store.Session, opts agent.Options) error {
 	if sess == nil || sess.Provider != string(agent.ProviderCodex) {
 		return fmt.Errorf("session is not a Codex session")
 	}
-	opts.ResumeProviderID = "resume"
+	opts.ResumeProviderID = sess.ProviderSessionID
 	ad := agent.NewCodex(opts)
 	if err := ad.Start(ctx); err != nil {
 		return err

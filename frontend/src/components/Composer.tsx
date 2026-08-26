@@ -72,6 +72,7 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
     setThinking("medium");
     setFastMode(false);
   }, [sessionId, session?.model, session?.provider]);
+
   const selectedModelInfo = models.find((modelInfo) => modelInfo.id === selectedModel);
   const reasoningEfforts = reasoningEffortsFor(provider, selectedModelInfo?.reasoningEfforts);
   const reasoningOptions = reasoningEfforts.map((value) => ({
@@ -87,6 +88,10 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
     );
   };
   const supportsFastMode = Boolean(provider) && (!selectedModel || selectedModelInfo?.fastMode === true);
+
+  const toggleFast = () => {
+    setFastMode((current) => !current);
+  };
 
   useEffect(() => {
     if (!supportsFastMode) setFastMode(false);
@@ -203,9 +208,7 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
   return (
     <div className="composer">
       <div
-        className={`composer__inner${fastMode ? " composer__inner--fast" : ""}${
-          provider === "claude" && thinking === "ultracode" ? " composer__inner--ultracode" : ""
-        }`}
+        className={`composer__inner${fastMode ? " composer__inner--fast" : ""}${provider === "claude" && thinking === "ultracode" ? " composer__inner--ultracode" : ""}`}
         style={{ position: "relative" }}
       >
         {showAttach && (
@@ -288,7 +291,7 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
                 type="button"
                 aria-pressed={fastMode}
                 title="Use the model's faster service tier for the next message"
-                onClick={() => setFastMode((active) => !active)}
+                onClick={toggleFast}
               >
                 <Zap size={12} />
                 Fast

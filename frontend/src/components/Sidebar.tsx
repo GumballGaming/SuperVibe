@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { ChevronRight, FolderPlus, GitBranch, Layers, Plus, Settings, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Bot, ChevronRight, FolderPlus, GitBranch, Layers, Pencil, Plus, Settings, Trash2 } from "lucide-react";
 import { useStore } from "../state/store";
 import { providerLabel } from "../lib/format";
 import type { ProjectTree } from "../lib/types";
@@ -10,6 +10,17 @@ export default function Sidebar() {
   const view = useStore((s) => s.view);
   const setView = useStore((s) => s.setView);
   const setDialog = useStore((s) => s.setDialog);
+  const [contextMenu, setContextMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    const close = () => setContextMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("blur", close);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("blur", close);
+    };
+  }, []);
 
   return (
     <aside className="sidebar">
@@ -36,7 +47,11 @@ export default function Sidebar() {
       </div>
 
       {projects.map((pt) => (
-        <ProjectNode key={pt.project.id} tree={pt} />
+        <ProjectNode key={pt.project.id} tree={pt} onSessionContextMenu={(sessionId, event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setContextMenu({ sessionId, x: event.clientX, y: event.clientY });
+        }} />
       ))}
 
       {projects.length === 0 && (
@@ -57,18 +72,40 @@ export default function Sidebar() {
           Settings
         </button>
       </div>
+      {contextMenu && <SessionContextMenu {...contextMenu} onClose={() => setContextMenu(null)} />}
     </aside>
   );
 }
 
-function ProjectNode({ tree }: { tree: ProjectTree }) {
+function ProjectNode({ tree, onSessionContextMenu }: { tree: ProjectTree; onSessionContextMenu: (sessionId: string, event: React.MouseEvent) => void }) {
   const [open, setOpen] = useState(true);
+  const [projectMenu, setProjectMenu] = useState<{ x: number; y: number } | null>(null);
   const selectedWorktreeId = useStore((s) => s.selectedWorktreeId);
   const selectedSession = useStore((s) => s.selectedSession);
   const sessions = useStore((s) => s.sessions);
   const selectWorktree = useStore((s) => s.selectWorktree);
   const openSession = useStore((s) => s.openSession);
   const setDialog = useStore((s) => s.setDialog);
+
+  useEffect(() => {
+    const close = () => setProjectMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("blur", close);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("blur", close);
+    };
+  }, []);
+
+  const toggleProjectMenu = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    if (projectMenu) {
+      setProjectMenu(null);
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    setProjectMenu({ x: Math.max(6, rect.left), y: rect.bottom + 4 });
+  };
 
   return (
     <div className="project">
@@ -81,12 +118,38 @@ function ProjectNode({ tree }: { tree: ProjectTree }) {
         </button>
         <button
           className="icon-btn project__add"
-          title="New worktree"
-          aria-label={`New worktree in ${tree.project.name}`}
-          onClick={() => setDialog({ kind: "newWorktree", projectId: tree.project.id })}
+          title="New agent or worktree"
+          aria-label={`New agent or worktree in ${tree.project.name}`}
+          onClick={toggleProjectMenu}
         >
           <Plus size={13} />
         </button>
+        {projectMenu && (
+          <div
+            className="session-context-menu"
+            style={{ left: projectMenu.x, top: projectMenu.y }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              onClick={() => {
+                setProjectMenu(null);
+                setDialog({ kind: "newAgent", projectId: tree.project.id });
+              }}
+            >
+              <Bot size={13} />
+              New Agent…
+            </button>
+            <button
+              onClick={() => {
+                setProjectMenu(null);
+                setDialog({ kind: "newWorktree", projectId: tree.project.id });
+              }}
+            >
+              <GitBranch size={13} />
+              New Worktree
+            </button>
+          </div>
+        )}
       </div>
       {open && (
         <div className="worktrees">
@@ -135,6 +198,7 @@ function ProjectNode({ tree }: { tree: ProjectTree }) {
                           <button
                             className={`agent ${selected ? "agent--active" : ""}`}
                             onClick={() => void openSession(session.id)}
+                            onContextMenu={(event) => onSessionContextMenu(session.id, event)}
                             title={`${label}${session.model ? ` · ${session.model}` : ""}`}
                           >
                             <span
@@ -172,6 +236,18 @@ function ProjectNode({ tree }: { tree: ProjectTree }) {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+function SessionContextMenu({ sessionId, x, y, onClose }: { sessionId: string; x: number; y: number; onClose: () => void }) {
+  const setDialog = useStore((s) => s.setDialog);
+  const session = useStore((s) => s.sessions[sessionId]);
+  if (!session) return null;
+  return (
+    <div className="session-context-menu" style={{ left: x, top: y }} onClick={(event) => event.stopPropagation()}>
+      <button onClick={() => { onClose(); setDialog({ kind: "rename", sessionId }); }}><Pencil size={13} />Rename</button>
+      <button className="session-context-menu__danger" onClick={() => { onClose(); setDialog({ kind: "deleteSession", sessionId }); }}><Trash2 size={13} />Delete</button>
     </div>
   );
 }

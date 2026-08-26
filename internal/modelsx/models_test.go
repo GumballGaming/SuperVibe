@@ -2,8 +2,6 @@ package modelsx
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -38,15 +36,6 @@ func TestCapabilitiesFor(t *testing.T) {
 			},
 		},
 		{
-			name:     "opencode",
-			provider: "opencode",
-			want: Capabilities{
-				Streaming: true, Tools: true, FileEdit: true, Shell: true,
-				MCP: true, Resume: true, Usage: true, CostReport: true,
-				ReasoningControls: true, NativeWebBrowse: true, ModelSelection: selectionDynamic,
-			},
-		},
-		{
 			name:     "unknown",
 			provider: "mystery-cli",
 			want:     Capabilities{ModelSelection: selectionNone},
@@ -66,35 +55,14 @@ func TestCapabilitiesFor(t *testing.T) {
 		})
 	}
 }
-func TestHasFastVariant(t *testing.T) {
-	tests := []struct {
-		name string
-		raw  string
-		want bool
-	}{
-		{"object", `{"fast":{"reasoningEffort":"low"}}`, true},
-		{"array", `[{"id":"fast"}]`, true},
-		{"disabled", `{"fast":{"disabled":true}}`, false},
-		{"other", `{"deep":{"reasoningEffort":"high"}}`, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := hasFastVariant([]byte(tt.raw)); got != tt.want {
-				t.Fatalf("hasFastVariant(%s) = %t, want %t", tt.raw, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestSuggestionsFor(t *testing.T) {
 	tests := []struct {
 		name     string
 		provider string
 		wantIDs  []string
 	}{
-		{"claude", "claude", []string{"claude-sonnet-5", "claude-opus-5", "claude-fable-5", "claude-haiku-4-5"}},
+		{"claude", "claude", []string{"claude-sonnet-5", "claude-opus-5", "claude-opus-4-8", "claude-fable-5", "claude-haiku-4-5"}},
 		{"codex", "codex", []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"}},
-		{"opencode", "opencode", nil},
 		{"unknown", "nope", nil},
 	}
 	for _, tt := range tests {
@@ -144,11 +112,11 @@ func TestCodexSuggestionLabels(t *testing.T) {
 }
 
 func TestParseClaudeModels(t *testing.T) {
-	got, err := parseClaudeModels("Current model: Opus 5 (default)\nUsage: /model <name>. Available: sonnet, opus, haiku, fable, best, sonnet[1m], opus[1m], opusplan, default, or a full model ID.")
+	got, err := parseClaudeModels("Current model: Opus 5 (default)\nUsage: /model <name>. Available: sonnet, opus, haiku, fable, best, sonnet[1m], opus[1m], opus48, opusplan, default, or a full model ID.")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"claude-sonnet-5", "claude-opus-5", "claude-fable-5", "claude-haiku-4-5"}
+	want := []string{"claude-sonnet-5", "claude-opus-5", "claude-opus-4-8", "claude-fable-5", "claude-haiku-4-5"}
 	if len(got) != len(want) {
 		t.Fatalf("got %d models, want %d (%+v)", len(got), len(want), got)
 	}
@@ -157,8 +125,17 @@ func TestParseClaudeModels(t *testing.T) {
 			t.Errorf("model %d = %+v, want provider claude and id %q", i, model, want[i])
 		}
 	}
-	if got[0].Label != "Claude Sonnet 5" || got[2].Label != "Claude Fable 5" {
+	if got[1].Label != "Claude Opus 5" || !got[1].FastMode {
+		t.Errorf("Opus 5 should be fast-mode capable: %+v", got[1])
+	}
+	if got[2].Label != "Claude Opus 4.8" || !got[2].FastMode {
+		t.Errorf("Opus 4.8 should be fast-mode capable: %+v", got[2])
+	}
+	if got[0].Label != "Claude Sonnet 5" || got[3].Label != "Claude Fable 5" {
 		t.Errorf("unexpected Claude labels: %+v", got)
+	}
+	if got[0].FastMode || got[3].FastMode || got[4].FastMode {
+		t.Errorf("non-Opus models must not advertise fast mode: %+v", got)
 	}
 }
 
@@ -194,77 +171,6 @@ func TestCodexReasoningEfforts(t *testing.T) {
 		if !reflect.DeepEqual(model.ReasoningEfforts, want[model.ID]) {
 			t.Errorf("%s reasoning efforts = %#v, want %#v", model.ID, model.ReasoningEfforts, want[model.ID])
 		}
-	}
-}
-
-const ocProvidersArrayFixture = `[
-	{"id":"anthropic","name":"Anthropic","models":{
-		"claude-sonnet-4-5":{"id":"claude-sonnet-4-5","name":"Claude Sonnet 4.5","context_length":200000},
-		"claude-opus-4-6":{"id":"claude-opus-4-6","name":"Claude Opus 4.6","context_length":"200000"}
-	}},
-	{"id":"openai","name":"OpenAI","models":{
-		"gpt-5.6":{"id":"gpt-5.6","name":"GPT-5.6","context_length":400000,"variants":{"fast":{"reasoningEffort":"low"}}},
-		"bare-model":"Bare Model Name"
-	}},
-	{"id":"broken","models":"not-an-object"},
-	{"id":"emptymodels","models":null}
-]`
-
-var ocWantModels = []ModelInfo{
-	{Provider: "anthropic", ID: "anthropic/claude-opus-4-6", Label: "Claude Opus 4.6", ContextWindow: 200000},
-	{Provider: "anthropic", ID: "anthropic/claude-sonnet-4-5", Label: "Claude Sonnet 4.5", ContextWindow: 200000},
-	{Provider: "openai", ID: "openai/bare-model", Label: "Bare Model Name"},
-	{Provider: "openai", ID: "openai/gpt-5.6", Label: "GPT-5.6", ContextWindow: 400000, FastMode: true},
-}
-
-func serveFixture(t *testing.T, body string, status int) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/provider" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_, _ = w.Write([]byte(body))
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
-func TestDiscoverOpencodeArrayShape(t *testing.T) {
-	srv := serveFixture(t, ocProvidersArrayFixture, http.StatusOK)
-	got, err := DiscoverOpencode(context.Background(), srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(got, ocWantModels) {
-		t.Fatalf("got %+v, want %+v", got, ocWantModels)
-	}
-}
-
-func TestDiscoverOpencodeEnvelopeShape(t *testing.T) {
-	envelope := `{"providers":` + ocProvidersArrayFixture + `}`
-	srv := serveFixture(t, envelope, http.StatusOK)
-	got, err := DiscoverOpencode(context.Background(), srv.URL+"/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(got, ocWantModels) {
-		t.Fatalf("got %+v, want %+v", got, ocWantModels)
-	}
-}
-
-func TestDiscoverOpencodeErrors(t *testing.T) {
-	ctx := context.Background()
-	srv := serveFixture(t, `{"error":"boom"}`, http.StatusInternalServerError)
-	if _, err := DiscoverOpencode(ctx, srv.URL); err == nil {
-		t.Fatal("expected error on HTTP 500")
-	}
-
-	bad := serveFixture(t, `this is not json {`, http.StatusOK)
-	if _, err := DiscoverOpencode(ctx, bad.URL); err == nil {
-		t.Fatal("expected error on malformed body")
 	}
 }
 
@@ -327,7 +233,7 @@ func TestProbeHealthError(t *testing.T) {
 }
 
 func TestProbeHealthNotInstalled(t *testing.T) {
-	h := ProbeHealth(context.Background(), "opencode", "definitely-not-a-real-cli-xyz")
+	h := ProbeHealth(context.Background(), "claude", "definitely-not-a-real-cli-xyz")
 	if h.State != stateNotInstalled {
 		t.Fatalf("State = %q, want not_installed", h.State)
 	}
@@ -337,7 +243,7 @@ func TestProbeHealthNotInstalled(t *testing.T) {
 
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "missing-binary.cmd")
-	h = ProbeHealth(context.Background(), "opencode", missing)
+	h = ProbeHealth(context.Background(), "claude", missing)
 	if h.State != stateNotInstalled {
 		t.Fatalf("State = %q for missing path, want not_installed", h.State)
 	}

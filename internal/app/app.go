@@ -2,18 +2,20 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"supervibe/internal/agent"
+	"supervibe/internal/browser"
 	"supervibe/internal/contextx"
 	"supervibe/internal/gitx"
 	"supervibe/internal/modelsx"
@@ -42,12 +44,16 @@ const defaultCodexModel = "gpt-5.6-sol"
 var defaultSettings = map[string]string{
 	"paths.claude":          "",
 	"paths.codex":           "",
-	"paths.opencode":        "",
 	"claude.permissionMode": "acceptEdits",
 	"codex.sandbox":         "workspace-write",
-	"opencode.autoApprove":  "true",
 	"appearance.theme":      "dark",
 	"appearance.accent":     "orange",
+	"last.agent.provider":   "",
+	"last.agent.model":      "",
+	"last.agent.target":     "",
+	"last.agent.branch":     "",
+	"last.agent.base":       "",
+	"last.agent.worktree":   "",
 }
 
 type App struct {
@@ -55,14 +61,12 @@ type App struct {
 	store       *store.Store
 	sup         *supervisor.Supervisor
 	mu          sync.Mutex
-	ocServers   map[string]*agent.OpenCodeServer
 	turnOptions map[string]agent.TurnOptions
 	cfgDir      string
 }
 
 func NewApp() *App {
 	return &App{
-		ocServers:   map[string]*agent.OpenCodeServer{},
 		turnOptions: map[string]agent.TurnOptions{},
 	}
 }
@@ -80,9 +84,6 @@ func (a *App) Startup(ctx context.Context) {
 		return
 	}
 	a.store = st
-	if err := a.writeOpencodeConfig(); err != nil {
-		runtime.LogWarningf(ctx, "opencode config: %v", err)
-	}
 	a.sup = supervisor.New(st, func(sessionID string, ev agent.AgentEvent) {
 		runtime.EventsEmit(ctx, eventTopic, SessionEvent{SessionID: sessionID, Event: ev})
 	})
@@ -92,15 +93,6 @@ func (a *App) Startup(ctx context.Context) {
 func (a *App) Shutdown(ctx context.Context) {
 	if a.sup != nil {
 		a.sup.StopAll()
-	}
-	a.mu.Lock()
-	servers := make([]*agent.OpenCodeServer, 0, len(a.ocServers))
-	for _, s := range a.ocServers {
-		servers = append(servers, s)
-	}
-	a.mu.Unlock()
-	for _, s := range servers {
-		s.Shutdown()
 	}
 	if a.store != nil {
 		_ = a.store.Close()
@@ -130,23 +122,6 @@ func (a *App) OpenMultipleFilesDialog(title string) ([]string, error) {
 		return nil, fmt.Errorf("app not started")
 	}
 	return openMultipleFilesDialog(a.ctx, title)
-}
-
-func (a *App) writeOpencodeConfig() error {
-	auto, ok, err := a.store.GetSetting("opencode.autoApprove")
-	if err == nil && ok && auto == "false" {
-		return nil
-	}
-	cfg := map[string]any{
-		"$schema": "https://opencode.ai/config.json",
-		"permission": map[string]any{
-			"edit":     "allow",
-			"bash":     "allow",
-			"webfetch": "allow",
-		},
-	}
-	b, _ := json.MarshalIndent(cfg, "", "  ")
-	return os.WriteFile(filepath.Join(a.cfgDir, "opencode-allow.json"), b, 0o644)
 }
 
 func (a *App) ListProjects() ([]ProjectTree, error) {
@@ -354,16 +329,15 @@ func (a *App) SetSettings(values map[string]string) error {
 			return err
 		}
 	}
-	return a.writeOpencodeConfig()
+	return nil
 }
 
 func (a *App) DetectCLIs() (map[string]bool, error) {
 	settings, _ := a.GetSettings()
 	return map[string]bool{
 		"git":      lookPath("git"),
-		"claude":   lookPath(firstNonEmpty(settings["paths.claude"], "claude")),
-		"codex":    lookPath(firstNonEmpty(settings["paths.codex"], "codex")),
-		"opencode": lookPath(firstNonEmpty(settings["paths.opencode"], "opencode")),
+		"claude": lookPath(firstNonEmpty(settings["paths.claude"], "claude")),
+		"codex":  lookPath(firstNonEmpty(settings["paths.codex"], "codex")),
 	}, nil
 }
 
@@ -377,20 +351,6 @@ func (a *App) ListModels(provider string) ([]modelsx.ModelInfo, error) {
 			return models, nil
 		}
 		return modelsx.SuggestionsFor(provider), nil
-	case string(agent.ProviderOpencode):
-		a.mu.Lock()
-		servers := make([]*agent.OpenCodeServer, 0, len(a.ocServers))
-		for _, srv := range a.ocServers {
-			servers = append(servers, srv)
-		}
-		a.mu.Unlock()
-		for _, srv := range servers {
-			models, err := modelsx.DiscoverOpencode(context.Background(), srv.BaseURL)
-			if err == nil && len(models) > 0 {
-				return models, nil
-			}
-		}
-		return []modelsx.ModelInfo{}, nil
 	default:
 		return modelsx.SuggestionsFor(provider), nil
 	}
@@ -423,7 +383,13 @@ func (a *App) StartSession(worktreeID, provider, model string) (*store.Session, 
 		return nil, err
 	}
 	opts.Model = model
-	return a.sup.StartSession(a.ctx, worktreeID, provider, model, opts)
+	sess, err := a.sup.StartSession(a.ctx, worktreeID, provider, model, opts)
+	if err != nil {
+		return nil, err
+	}
+	_ = a.store.SetSetting("last.agent.provider", provider)
+	_ = a.store.SetSetting("last.agent.model", model)
+	return sess, nil
 }
 
 func (a *App) buildOptions(worktreeID, provider string) (agent.Options, error) {
@@ -438,43 +404,8 @@ func (a *App) buildOptions(worktreeID, provider string) (agent.Options, error) {
 		CodexSandbox:         settings["codex.sandbox"],
 		ClaudePath:           firstNonEmpty(settings["paths.claude"], "claude"),
 		CodexPath:            firstNonEmpty(settings["paths.codex"], "codex"),
-		OpencodePath:         firstNonEmpty(settings["paths.opencode"], "opencode"),
-		AppConfigDir:         a.cfgDir,
-	}
-	if provider == string(agent.ProviderOpencode) {
-		srv, err := a.ensureOpencodeServer(wt.ProjectID, opts.OpencodePath)
-		if err != nil {
-			return agent.Options{}, err
-		}
-		opts.OpenCodeServer = srv
 	}
 	return opts, nil
-}
-
-func (a *App) ensureOpencodeServer(projectID, binPath string) (*agent.OpenCodeServer, error) {
-	proj, err := a.getProject(projectID)
-	if err != nil {
-		return nil, err
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if srv, ok := a.ocServers[proj.Path]; ok {
-		return srv, nil
-	}
-	var cfgFile string
-	auto := true
-	if v, ok, err := a.store.GetSetting("opencode.autoApprove"); err == nil && ok {
-		auto = v != "false"
-	}
-	if auto {
-		cfgFile = filepath.Join(a.cfgDir, "opencode-allow.json")
-	}
-	srv, err := agent.StartOpenCodeServer(binPath, proj.Path, cfgFile)
-	if err != nil {
-		return nil, err
-	}
-	a.ocServers[proj.Path] = srv
-	return srv, nil
 }
 
 func (a *App) SendMessage(sessionID, prompt string) error {
@@ -522,6 +453,97 @@ func (a *App) SendMessageConfigured(sessionID, prompt, model, reasoningEffort st
 		a.mu.Unlock()
 	}
 	return a.sendWithRecovery(sess, prompt, options)
+}
+
+func (a *App) SendMessageExtended(sessionID, text string, mentions, attachmentPaths []string) error {
+	sess, err := a.store.GetSession(sessionID)
+	if err != nil {
+		return err
+	}
+	wt, err := a.store.GetWorktree(sess.WorktreeID)
+	if err != nil {
+		return err
+	}
+	prompt, err := buildExtendedPrompt(a.ctx, wt.Path, text, mentions, attachmentPaths, a.urlFetcher())
+	if err != nil {
+		return err
+	}
+	return a.sendWithRecovery(sess, prompt, agent.TurnOptions{
+		Model: defaultModel(sess.Provider, sess.Model),
+	})
+}
+
+func buildExtendedPrompt(ctx context.Context, worktreePath, text string, mentions, attachments []string, fetcher func(string) (string, error)) (string, error) {
+	lim := contextx.DefaultLimits()
+	var blocks []string
+	for _, tok := range mentions {
+		block, err := contextx.ResolveMention(ctx, worktreePath, tok, lim, fetcher)
+		if err != nil {
+			return "", fmt.Errorf("mention @%s: %w", tok, err)
+		}
+		blocks = append(blocks, block)
+	}
+	for _, p := range attachments {
+		block, err := attachmentBlock(p, lim)
+		if err != nil {
+			return "", err
+		}
+		blocks = append(blocks, block)
+	}
+	if len(blocks) == 0 {
+		return text, nil
+	}
+	main := strings.TrimSpace(text)
+	if main == "" {
+		return strings.Join(blocks, "\n\n"), nil
+	}
+	return main + "\n\n" + strings.Join(blocks, "\n\n"), nil
+}
+
+func (a *App) urlFetcher() func(string) (string, error) {
+	return func(raw string) (string, error) {
+		page, err := browser.Fetch(a.ctx, raw, 256*1024)
+		if err != nil {
+			return "", err
+		}
+		return page.Text, nil
+	}
+}
+
+var imageExts = map[string]bool{
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true,
+	".bmp": true, ".svg": true, ".avif": true, ".ico": true,
+}
+
+func attachmentBlock(p string, lim contextx.Limits) (string, error) {
+	info, err := os.Stat(p)
+	if err != nil {
+		return "", fmt.Errorf("attachment %s: %w", p, err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("attachment %s: is a directory", p)
+	}
+	name := filepath.Base(p)
+	ext := strings.ToLower(filepath.Ext(name))
+	if imageExts[ext] {
+		return fmt.Sprintf("[Attached image: %s]", filepath.ToSlash(p)), nil
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	buf := make([]byte, lim.MaxFileBytes)
+	n, rerr := io.ReadFull(f, buf)
+	if rerr != nil && rerr != io.EOF && rerr != io.ErrUnexpectedEOF {
+		return "", rerr
+	}
+	content := string(buf[:n])
+	if !utf8.ValidString(content) || strings.ContainsRune(content, '\x00') {
+		return fmt.Sprintf("[Attachment: %s (%d bytes)]", filepath.ToSlash(p), info.Size()), nil
+	}
+	content = strings.TrimRight(content, " \t\r\n")
+	return fmt.Sprintf("=== %s ===\n```%s\n%s\n```", filepath.ToSlash(p), strings.TrimPrefix(ext, "."), content), nil
 }
 
 func (a *App) sendWithRecovery(sess *store.Session, prompt string, options agent.TurnOptions) error {

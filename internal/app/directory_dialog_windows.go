@@ -32,7 +32,7 @@ func openDirectoryDialog(_ context.Context, title string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 func openMultipleFilesDialog(_ context.Context, title string) ([]string, error) {
-	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = %s; $dialog.Multiselect = $true; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { @($dialog.FileNames) | ConvertTo-Json -Compress } else { '[]' }`, quotePowerShellLiteral(title))
+	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = %s; $dialog.Multiselect = $true; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ConvertTo-Json -InputObject @($dialog.FileNames) -Compress } else { '[]' }`, quotePowerShellLiteral(title))
 	cmd := exec.Command(
 		"powershell.exe",
 		"-NoLogo",

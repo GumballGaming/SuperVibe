@@ -219,8 +219,6 @@ function shortProvider(p: string): string {
       return "Claude Code";
     case "codex":
       return "Codex";
-    case "opencode":
-      return "opencode";
     default:
       return p;
   }

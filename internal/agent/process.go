@@ -5,9 +5,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 )
+
+func environ() []string { return os.Environ() }
 
 const ringCap = 256 * 1024
 

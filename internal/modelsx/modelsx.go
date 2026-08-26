@@ -6,13 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -81,6 +77,7 @@ var suggestedByProvider = map[string][]ModelInfo{
 	"claude": {
 		{Provider: "claude", ID: "claude-sonnet-5", Label: "Claude Sonnet 5", Suggested: true},
 		{Provider: "claude", ID: "claude-opus-5", Label: "Claude Opus 5", Suggested: true, FastMode: true},
+		{Provider: "claude", ID: "claude-opus-4-8", Label: "Claude Opus 4.8", Suggested: true, FastMode: true},
 		{Provider: "claude", ID: "claude-fable-5", Label: "Claude Fable 5", Suggested: true},
 		{Provider: "claude", ID: "claude-haiku-4-5", Label: "Claude Haiku 4.5", Suggested: true},
 	},
@@ -137,20 +134,6 @@ func CapabilitiesFor(provider string) Capabilities {
 			ReasoningControls: true,
 			NativeWebBrowse:   true,
 			ModelSelection:    selectionFreeform,
-		}
-	case "opencode":
-		return Capabilities{
-			Streaming:         true,
-			Tools:             true,
-			FileEdit:          true,
-			Shell:             true,
-			MCP:               true,
-			Resume:            true,
-			Usage:             true,
-			CostReport:        true,
-			ReasoningControls: true,
-			NativeWebBrowse:   true,
-			ModelSelection:    selectionDynamic,
 		}
 	default:
 		return Capabilities{ModelSelection: selectionNone}
@@ -233,12 +216,16 @@ func parseClaudeModels(result string) ([]ModelInfo, error) {
 		if _, ok := found[canonical]; ok {
 			continue
 		}
-		found[canonical] = ModelInfo{
+		info := ModelInfo{
 			Provider:  "claude",
 			ID:        canonical,
 			Label:     claudeModelLabel(canonical),
 			Suggested: true,
 		}
+		if isClaudeFastModel(canonical) {
+			info.FastMode = true
+		}
+		found[canonical] = info
 	}
 	if len(found) == 0 {
 		return nil, fmt.Errorf("claude model list: no supported models in output")
@@ -247,6 +234,7 @@ func parseClaudeModels(result string) ([]ModelInfo, error) {
 	for _, canonical := range []string{
 		"claude-sonnet-5",
 		"claude-opus-5",
+		"claude-opus-4-8",
 		"claude-fable-5",
 		"claude-haiku-4-5",
 	} {
@@ -263,6 +251,8 @@ func canonicalClaudeModel(id string) (string, bool) {
 		return "claude-sonnet-5", true
 	case "opus", "opus[1m]", "claude-opus-5":
 		return "claude-opus-5", true
+	case "opus48", "opus48[1m]", "claude-opus-4-8":
+		return "claude-opus-4-8", true
 	case "fable", "fable[1m]", "claude-fable-5":
 		return "claude-fable-5", true
 	case "haiku", "claude-haiku-4-5", "claude-haiku-4-5-20251001":
@@ -272,12 +262,23 @@ func canonicalClaudeModel(id string) (string, bool) {
 	}
 }
 
+// isClaudeFastModel reports whether the model supports Claude Code fast mode.
+func isClaudeFastModel(id string) bool {
+	switch id {
+	case "claude-opus-5", "claude-opus-4-8":
+		return true
+	}
+	return false
+}
+
 func claudeModelLabel(id string) string {
 	switch strings.ToLower(id) {
 	case "claude-sonnet-5":
 		return "Claude Sonnet 5"
 	case "claude-opus-5":
 		return "Claude Opus 5"
+	case "claude-opus-4-8":
+		return "Claude Opus 4.8"
 	case "claude-fable-5":
 		return "Claude Fable 5"
 	case "claude-haiku-4-5":
@@ -313,134 +314,6 @@ func claudeModelCommand(ctx context.Context, exe string) *exec.Cmd {
 	default:
 		return exec.CommandContext(ctx, exe, args...)
 	}
-}
-
-type ocModelEntry struct {
-	ID            string          `json:"id"`
-	Name          string          `json:"name"`
-	ContextLength json.RawMessage `json:"context_length"`
-	Variants      json.RawMessage `json:"variants"`
-}
-
-func DiscoverOpencode(ctx context.Context, baseURL string) ([]ModelInfo, error) {
-	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if baseURL == "" {
-		return nil, fmt.Errorf("opencode provider list: empty base URL")
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/provider", nil)
-	if err != nil {
-		return nil, err
-	}
-	client := &http.Client{Timeout: discoverTimeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("opencode provider list: %w", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-	if err != nil {
-		return nil, fmt.Errorf("opencode provider list: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("opencode provider list: %s: %s", resp.Status, truncate(string(body), detailMaxRunes))
-	}
-	return parseOpencodeProviders(body)
-}
-
-func parseOpencodeProviders(body []byte) ([]ModelInfo, error) {
-	items, err := decodeOpencodeEnvelope(body)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]ModelInfo, 0, len(items))
-	for _, rawProvider := range items {
-		var prov struct {
-			ID     string                     `json:"id"`
-			Models map[string]json.RawMessage `json:"models"`
-		}
-		if err := json.Unmarshal(rawProvider, &prov); err != nil || prov.ID == "" {
-			continue
-		}
-		for modelID, rawModel := range prov.Models {
-			info := ModelInfo{Provider: prov.ID, ID: prov.ID + "/" + modelID}
-			if len(rawModel) == 0 || bytes.Equal(bytes.TrimSpace(rawModel), []byte("null")) {
-				info.Label = modelID
-				out = append(out, info)
-				continue
-			}
-			var entry ocModelEntry
-			if err := json.Unmarshal(rawModel, &entry); err != nil {
-				var s string
-				if err := json.Unmarshal(rawModel, &s); err != nil || s == "" {
-					continue
-				}
-				entry.ID, entry.Name = s, s
-			}
-			info.Label = firstNonEmpty(entry.Name, entry.ID, modelID)
-			if hasFastVariant(entry.Variants) {
-				info.FastMode = true
-			}
-			if cw := parseLenientInt64(entry.ContextLength); cw > 0 {
-				info.ContextWindow = cw
-			}
-			out = append(out, info)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Provider != out[j].Provider {
-			return out[i].Provider < out[j].Provider
-		}
-		return out[i].ID < out[j].ID
-	})
-	return out, nil
-}
-
-func hasFastVariant(raw json.RawMessage) bool {
-	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return false
-	}
-	var named map[string]json.RawMessage
-	if json.Unmarshal(raw, &named) == nil {
-		if fast, ok := named["fast"]; ok {
-			return variantEnabled(fast)
-		}
-	}
-	var listed []struct {
-		ID       string `json:"id"`
-		Disabled bool   `json:"disabled"`
-	}
-	if json.Unmarshal(raw, &listed) == nil {
-		for _, variant := range listed {
-			if variant.ID == "fast" {
-				return !variant.Disabled
-			}
-		}
-	}
-	return false
-}
-
-func variantEnabled(raw json.RawMessage) bool {
-	var variant struct {
-		Disabled bool `json:"disabled"`
-	}
-	if json.Unmarshal(raw, &variant) == nil {
-		return !variant.Disabled
-	}
-	return true
-}
-
-func decodeOpencodeEnvelope(body []byte) ([]json.RawMessage, error) {
-	var envelope struct {
-		Providers []json.RawMessage `json:"providers"`
-	}
-	if err := json.Unmarshal(body, &envelope); err == nil && envelope.Providers != nil {
-		return envelope.Providers, nil
-	}
-	var list []json.RawMessage
-	if err := json.Unmarshal(body, &list); err != nil {
-		return nil, fmt.Errorf("parse opencode providers: %w", err)
-	}
-	return list, nil
 }
 
 func ProbeHealth(ctx context.Context, provider, bin string) Health {
@@ -545,18 +418,4 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return string(runes[:max])
-}
-
-func parseLenientInt64(raw json.RawMessage) int64 {
-	s := strings.Trim(strings.TrimSpace(string(raw)), `"`)
-	if s == "" || s == "null" {
-		return 0
-	}
-	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
-		return n
-	}
-	if f, err := strconv.ParseFloat(s, 64); err == nil {
-		return int64(f)
-	}
-	return 0
 }

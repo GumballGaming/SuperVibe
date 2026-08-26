@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { api, hasBackend, onRuntimeEvent } from "../lib/backend";
+import { playDing } from "../lib/sound";
 import type {
   AgentEvent,
   Capabilities,
@@ -21,7 +22,7 @@ export type Tab = "chat" | "diff" | "output";
 export type DialogState =
   | { kind: "addProject" }
   | { kind: "newWorktree"; projectId: string }
-  | { kind: "newSession"; worktreeId: string }
+  | { kind: "newAgent"; projectId: string; initialWorktreeId?: string }
   | { kind: "settings" }
   | { kind: "rename"; sessionId: string }
   | { kind: "deleteSession"; sessionId: string }
@@ -57,6 +58,7 @@ interface AppState {
   permissions: Record<string, string>;
   pendingRequests: PermissionRequest[];
   procLines: Record<string, string[]>;
+  settings: Record<string, string>;
 }
 
 interface AppActions {
@@ -77,6 +79,7 @@ interface AppActions {
   optimisticUserMessage: (sessionId: string, text: string) => void;
   ensureCaps: (provider: string) => Promise<Capabilities | null>;
   loadModels: (provider: string, refresh?: boolean) => Promise<ModelInfo[]>;
+  refreshSettings: () => Promise<void>;
   approve: (req: PermissionRequest, allow: boolean) => Promise<void>;
   renameSession: (id: string, title: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
@@ -386,16 +389,30 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
   permissions: {},
   pendingRequests: [],
   procLines: {},
+  settings: {},
 
   async init() {
+    await get().refreshSettings();
     if (!hasBackend()) {
       set({ degraded: true, ready: true });
       return;
     }
     onRuntimeEvent("agent:event", (...args: unknown[]) => {
-      const payload = args[0] as { sessionId: string; event: AgentEvent };
+      let payload = args[0] as { sessionId: string; event: AgentEvent | string } | string;
+      if (typeof payload === "string") {
+        try {
+          payload = JSON.parse(payload) as { sessionId: string; event: AgentEvent };
+        } catch {
+          return;
+        }
+      }
       if (payload?.sessionId && payload?.event) {
-        get().applyEvent(payload.sessionId, payload.event);
+        const event = typeof payload.event === "string"
+          ? (() => {
+              try { return JSON.parse(payload.event) as AgentEvent; } catch { return null; }
+            })()
+          : payload.event;
+        if (event) get().applyEvent(payload.sessionId, event);
       }
     });
     onRuntimeEvent("perm:request", (...args: unknown[]) => {
@@ -524,6 +541,12 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
   },
 
   applyEvent(sessionId, ev) {
+    if (ev.type === "result" && ev.status !== "error") {
+      const prev = get().sessions[sessionId];
+      if (prev && (prev.status === "running" || prev.status === "waiting")) {
+        playDing();
+      }
+    }
     set((state) => {
       const sessions = { ...state.sessions };
       const itemsMap = { ...state.items };
@@ -635,6 +658,14 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
       const empty: ModelInfo[] = [];
       set((s) => ({ models: { ...s.models, [provider]: empty } }));
       return empty;
+    }
+  },
+
+  async refreshSettings() {
+    try {
+      set({ settings: await api.getSettings() });
+    } catch {
+      set({ settings: {} });
     }
   },
 

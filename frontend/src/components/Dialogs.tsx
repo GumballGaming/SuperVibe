@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, FolderOpen, Palette, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, ChevronDown, FolderGit2, FolderOpen, GitBranch, Palette, RefreshCw, Search, X } from "lucide-react";
 import { useStore } from "../state/store";
 import { api, openDirectoryDialog } from "../lib/backend";
 import type { Provider } from "../lib/types";
@@ -14,7 +14,7 @@ export default function Dialogs() {
   const setDialog = useStore((s) => s.setDialog);
 
   if (!dialog) return null;
-  const compactAgentDialog = dialog.kind === "newSession" || dialog.kind === "subagent";
+  const compactAgentDialog = dialog.kind === "newAgent" || dialog.kind === "subagent";
   return (
     <div className="modal-overlay" onClick={() => setDialog(null)}>
       <div
@@ -23,8 +23,11 @@ export default function Dialogs() {
       >
         {dialog.kind === "addProject" && <AddProject />}
         {dialog.kind === "newWorktree" && <NewWorktree projectId={dialog.projectId} />}
-        {dialog.kind === "newSession" && <NewSession worktreeId={dialog.worktreeId} />}
+        {dialog.kind === "newAgent" && (
+          <NewAgent projectId={dialog.projectId} initialWorktreeId={dialog.initialWorktreeId} />
+        )}
         {dialog.kind === "settings" && <SettingsDialog />}
+        {dialog.kind === "rename" && <RenameDialog sessionId={dialog.sessionId} />}
         {dialog.kind === "deleteSession" && <DeleteSessionDialog sessionId={dialog.sessionId} />}
         {dialog.kind === "subagent" && <SubagentDialog sessionId={dialog.sessionId} />}
         {dialog.kind === "browseFiles" && <BrowseFilesDialog worktreeId={dialog.worktreeId} />}
@@ -190,61 +193,194 @@ function NewWorktree({ projectId }: { projectId: string }) {
   );
 }
 
-const PROVIDERS: Provider[] = ["claude", "codex", "opencode"];
+const PROVIDERS: Provider[] = ["claude", "codex"];
 const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
 
-function NewSession({ worktreeId }: { worktreeId: string }) {
+function NewAgent({ projectId, initialWorktreeId }: { projectId: string; initialWorktreeId?: string }) {
+  const projects = useStore((s) => s.projects);
+  const tree = projects.find((pt) => pt.project.id === projectId);
+  const worktrees = tree?.worktrees || [];
+
   const clis = useStore((s) => s.clis);
   const ensureCaps = useStore((s) => s.ensureCaps);
   const loadModels = useStore((s) => s.loadModels);
   const capsMap = useStore((s) => s.capabilities);
   const modelsMap = useStore((s) => s.models);
-  const [provider, setProvider] = useState<Provider>(() => {
-    for (const p of PROVIDERS) if (clis[p]) return p;
-    return "claude";
-  });
-  const [model, setModel] = useState(() => (provider === "codex" ? DEFAULT_CODEX_MODEL : ""));
+  const refreshProjects = useStore((s) => s.refreshProjects);
+  const refreshSessionLists = useStore((s) => s.refreshSessionLists);
   const newSessionSelected = useStore((s) => s.newSessionSelected);
   const openSession = useStore((s) => s.openSession);
   const pushToast = useStore((s) => s.pushToast);
   const setDialog = useStore((s) => s.setDialog);
+  const settings = useStore((s) => s.settings);
+  const refreshSettings = useStore((s) => s.refreshSettings);
+
+  const [target, setTarget] = useState<"new" | "existing">(() => {
+    if (initialWorktreeId && worktrees.some((w) => w.id === initialWorktreeId)) return "existing";
+    const savedTarget = settings["last.agent.target"];
+    const savedWorktree = settings["last.agent.worktree"];
+    return savedTarget === "existing" && savedWorktree && worktrees.some((w) => w.id === savedWorktree)
+      ? "existing"
+      : "new";
+  });
+  const [worktreeId, setWorktreeId] = useState(() => {
+    if (initialWorktreeId && worktrees.some((w) => w.id === initialWorktreeId)) return initialWorktreeId;
+    const savedWorktree = settings["last.agent.worktree"];
+    if (savedWorktree && worktrees.some((w) => w.id === savedWorktree)) return savedWorktree;
+    return worktrees[0]?.id || "";
+  });
+  const [branch, setBranch] = useState(settings["last.agent.branch"] || "");
+  const [base, setBase] = useState(settings["last.agent.base"] || "");
+  const [branches, setBranches] = useState<{ name: string; isCurrent: boolean }[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  const [provider, setProvider] = useState<Provider>(() => {
+    const saved = settings["last.agent.provider"];
+    if (saved && (PROVIDERS as string[]).includes(saved) && clis[saved]) return saved as Provider;
+    for (const p of PROVIDERS) if (clis[p]) return p;
+    return "claude";
+  });
+  const [model, setModel] = useState(() => {
+    const saved = settings["last.agent.model"];
+    if (saved) return saved;
+    return provider === "codex" ? DEFAULT_CODEX_MODEL : "";
+  });
+  const prevProvider = useRef(provider);
+  const [modelQuery, setModelQuery] = useState("");
 
   useEffect(() => {
-    setModel(provider === "codex" ? DEFAULT_CODEX_MODEL : "");
+    if (target !== "new") return;
+    api
+      .listBranches(projectId)
+      .then(setBranches)
+      .catch(() => setBranches([]));
+  }, [target, projectId]);
+
+  useEffect(() => {
+    if (prevProvider.current !== provider) {
+      prevProvider.current = provider;
+      setModel(provider === "codex" ? DEFAULT_CODEX_MODEL : "");
+      setModelQuery("");
+    }
     void ensureCaps(provider);
-    void loadModels(provider);
+    void loadModels(provider, false);
   }, [provider, ensureCaps, loadModels]);
 
   const caps = capsMap[provider];
   const models = modelsMap[provider] || [];
   const selection = caps?.modelSelection;
+  const canSubmit = target === "new" ? branch.trim().length > 0 : worktreeId !== "";
 
   const submit = async () => {
+    if (!canSubmit || busy) return;
+    setBusy(true);
     try {
-      const sess = await api.startSession(worktreeId, provider, model.trim());
-      newSessionSelected(worktreeId, sess.id);
-      await useStore.getState().refreshSessionLists();
+      let wtId = worktreeId;
+      if (target === "new") {
+        const created = await api.createWorktree(projectId, branch.trim(), base);
+        await refreshProjects();
+        wtId = created.id;
+      }
+      const sess = await api.startSession(wtId, provider, model.trim());
+      await api.setSettings({
+        "last.agent.target": target,
+        "last.agent.worktree": wtId,
+        "last.agent.branch": target === "new" ? branch.trim() : "",
+        "last.agent.base": target === "new" ? base : "",
+      });
+      newSessionSelected(wtId, sess.id);
+      await refreshSessionLists();
+      void refreshSettings();
       void openSession(sess.id);
       setDialog(null);
     } catch (e) {
-      pushToast({ kind: "error", title: "Could not start session", detail: cleanError(e) });
+      pushToast({ kind: "error", title: "Could not start agent", detail: cleanError(e) });
+    } finally {
+      setBusy(false);
     }
   };
 
   return (
     <ModalShell
-      title="New Agent Session"
+      title="New Agent"
       footer={
         <>
           <button className="btn" onClick={() => setDialog(null)}>
             Cancel
           </button>
-          <button className="btn btn--primary" onClick={() => void submit()}>
-            Start
+          <button className="btn btn--primary" disabled={!canSubmit || busy} onClick={() => void submit()}>
+            {busy ? "Starting…" : "Start"}
           </button>
         </>
       }
     >
+      <div className="field">
+        <label>Target</label>
+        <div className="provider-grid">
+          <button
+            className={`provider-card ${target === "new" ? "provider-card--selected" : ""}`}
+            onClick={() => setTarget("new")}
+          >
+            <GitBranch size={16} />
+            <span className="provider-card__copy">
+              <span className="provider-name">New branch</span>
+              <span className="provider-status">new worktree</span>
+            </span>
+          </button>
+          <button
+            className={`provider-card ${target === "existing" ? "provider-card--selected" : ""} ${
+              worktrees.length === 0 ? "provider-card--disabled" : ""
+            }`}
+            disabled={worktrees.length === 0}
+            onClick={() => setTarget("existing")}
+          >
+            <FolderGit2 size={16} />
+            <span className="provider-card__copy">
+              <span className="provider-name">Existing worktree</span>
+              <span className="provider-status">{worktrees.length ? null : "no worktrees"}</span>
+            </span>
+          </button>
+        </div>
+      </div>
+      {target === "new" ? (
+        <>
+          <div className="field">
+            <label>New branch</label>
+            <input
+              autoFocus
+              placeholder="feature/my-feature"
+              value={branch}
+              onChange={(e) => setBranch(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void submit()}
+            />
+          </div>
+          <div className="field">
+            <label>Base branch</label>
+            <Dropdown
+              value={base}
+              options={[
+                { value: "", label: "Default (current HEAD)" },
+                ...branches.map((b) => ({ value: b.name, label: b.name })),
+              ]}
+              onChange={setBase}
+              ariaLabel="Base branch"
+            />
+          </div>
+        </>
+      ) : (
+        <div className="field">
+          <label>Worktree</label>
+          <Dropdown
+            value={worktreeId}
+            options={worktrees.map((wt) => ({
+              value: wt.id,
+              label: `${wt.branch}${wt.isPrimary ? " (primary)" : ""}`,
+            }))}
+            onChange={setWorktreeId}
+            ariaLabel="Worktree"
+          />
+        </div>
+      )}
       <div className="field">
         <label>Agent</label>
         <div className="provider-grid">
@@ -270,15 +406,13 @@ function NewSession({ worktreeId }: { worktreeId: string }) {
           <label>{models.length > 0 ? "Model" : "Model override (optional)"}</label>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             {models.length > 0 ? (
-              <Dropdown
-                style={{ flex: 1 }}
+              <ModelPicker
+                models={models}
                 value={model}
-                options={[
-                  ...(provider === "codex" ? [] : [{ value: "", label: "Default model" }]),
-                  ...models.map((m) => ({ value: m.id, label: m.label })),
-                ]}
+                query={modelQuery}
+                onQueryChange={setModelQuery}
                 onChange={setModel}
-                ariaLabel="Model"
+                allowDefault={provider !== "codex"}
               />
             ) : (
               <input
@@ -300,6 +434,43 @@ function NewSession({ worktreeId }: { worktreeId: string }) {
         </div>
       )}
     </ModalShell>
+  );
+}
+
+function ModelPicker({ models, value, query, onQueryChange, onChange, allowDefault }: {
+  models: { id: string; label: string; provider: string }[];
+  value: string;
+  query: string;
+  onQueryChange: (value: string) => void;
+  onChange: (value: string) => void;
+  allowDefault: boolean;
+}) {
+  const [open, setOpen] = useState(true);
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const normalized = query.trim().toLowerCase();
+  const groups = Array.from(new Set(models.map((model) => model.provider))).map((provider) => ({
+    provider,
+    models: models.filter((model) => model.provider === provider && (!normalized || `${model.label} ${model.id}`.toLowerCase().includes(normalized))),
+  })).filter((group) => group.models.length > 0);
+  const selected = value ? models.find((model) => model.id === value)?.label || value : "Default model";
+
+  return (
+    <div className="model-picker" style={{ flex: 1 }}>
+      <button className="model-picker__trigger" onClick={() => setOpen((current) => !current)} aria-expanded={open}>
+        <span>{selected}</span><ChevronDown size={14} />
+      </button>
+      {open && <div className="model-picker__panel">
+        <div className="model-picker__search"><Search size={13} /><input autoFocus placeholder="Search models" value={query} onChange={(event) => onQueryChange(event.target.value)} /></div>
+        {allowDefault && !normalized && <button className={`model-picker__option ${!value ? "model-picker__option--selected" : ""}`} onClick={() => { onChange(""); setOpen(false); }}>Default model</button>}
+        {groups.length === 0 && <div className="model-picker__empty">No matching models</div>}
+        {groups.map((group) => <div key={group.provider} className="model-picker__group">
+          <button className="model-picker__group-title" onClick={() => setCollapsed((current) => ({ ...current, [group.provider]: !current[group.provider] }))}>
+            <ChevronDown className={collapsed[group.provider] ? "model-picker__chevron--collapsed" : ""} size={13} />{group.provider}
+          </button>
+          {!collapsed[group.provider] && group.models.map((modelInfo) => <button key={modelInfo.id} className={`model-picker__option ${value === modelInfo.id ? "model-picker__option--selected" : ""}`} title={modelInfo.id} onClick={() => { onChange(modelInfo.id); setOpen(false); }}>{modelInfo.label}</button>)}
+        </div>)}
+      </div>}
+    </div>
   );
 }
 
@@ -364,7 +535,6 @@ function SettingsDialog() {
   const pathFields: { key: string; label: string; placeholder: string }[] = [
     { key: "paths.claude", label: "Claude Code", placeholder: "Use PATH (claude)" },
     { key: "paths.codex", label: "Codex", placeholder: "Use PATH (codex)" },
-    { key: "paths.opencode", label: "OpenCode", placeholder: "Use PATH (opencode)" },
   ];
 
   return (
@@ -487,17 +657,6 @@ function SettingsDialog() {
                 ariaLabel="Codex sandbox mode"
               />
             </div>
-            <label className="settings-toggle">
-              <input
-                type="checkbox"
-                checked={(values["opencode.autoApprove"] || "true") !== "false"}
-                onChange={(e) => setValue("opencode.autoApprove", String(e.target.checked))}
-              />
-              <span>
-                <strong>Auto-approve OpenCode tools</strong>
-                <small>Allow file edits and shell commands without prompts.</small>
-              </span>
-            </label>
           </div>
         </section>
       </div>

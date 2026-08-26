@@ -11,9 +11,8 @@ import (
 type Provider string
 
 const (
-	ProviderClaude   Provider = "claude"
-	ProviderCodex    Provider = "codex"
-	ProviderOpencode Provider = "opencode"
+	ProviderClaude Provider = "claude"
+	ProviderCodex  Provider = "codex"
 )
 
 type EventType string
@@ -50,6 +49,8 @@ type AgentEvent struct {
 	CostUSD           float64   `json:"costUsd,omitempty"`
 	TokensIn          int64     `json:"tokensIn,omitempty"`
 	TokensOut         int64     `json:"tokensOut,omitempty"`
+	CachedTokens      int64     `json:"cachedTokens,omitempty"`
+	ReasoningTokens   int64     `json:"reasoningTokens,omitempty"`
 	DurationMS        int64     `json:"durationMs,omitempty"`
 	Ts                int64     `json:"ts"`
 }
@@ -73,12 +74,9 @@ type Options struct {
 	FastMode             bool
 	ClaudePermissionMode string
 	CodexSandbox         string
-	ClaudePath           string
-	CodexPath            string
-	OpencodePath         string
-	ResumeProviderID     string
-	OpenCodeServer       *OpenCodeServer
-	AppConfigDir         string
+	ClaudePath       string
+	CodexPath        string
+	ResumeProviderID string
 }
 
 type TurnSender interface {

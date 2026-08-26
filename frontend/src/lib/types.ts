@@ -1,4 +1,4 @@
-export type Provider = "claude" | "codex" | "opencode";
+export type Provider = "claude" | "codex";
 
 export interface Project {
   id: string;
