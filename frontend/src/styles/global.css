@@ -180,6 +180,12 @@ textarea:focus {
   padding-left: 14px;
   background: var(--background);
   -webkit-app-region: drag;
+  --wails-draggable: drag;
+  cursor: grab;
+}
+
+.titlebar:active {
+  cursor: grabbing;
 }
 
 .titlebar__brand {
@@ -201,10 +207,23 @@ textarea:focus {
   image-rendering: pixelated;
 }
 
+.titlebar__dev-badge {
+  padding: 2px 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 4px;
+  color: var(--accent);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  line-height: 1;
+}
+
 .titlebar__controls {
   display: flex;
   height: 100%;
   -webkit-app-region: no-drag;
+  --wails-draggable: no-drag;
+  cursor: default;
 }
 
 .titlebar__btn {

@@ -4,10 +4,11 @@ import { windowControls } from "../lib/backend";
 export default function TitleBar() {
   const controls = windowControls();
   return (
-    <div className="titlebar">
+    <div className="titlebar" data-wails-draggable="true" aria-label="Drag to move window">
       <div className="titlebar__brand">
         <img src="/appicon.png" className="titlebar__logo-icon" alt="" draggable={false} />
         SuperVibe
+        <span className="titlebar__dev-badge" aria-label="Development version">DEV</span>
       </div>
       <div className="titlebar__controls">
         <button className="titlebar__btn" onClick={controls.minimise} title="Minimize">
