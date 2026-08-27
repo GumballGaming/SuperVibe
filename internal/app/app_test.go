@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,24 @@ import (
 	"supervibe/internal/agent"
 	"supervibe/internal/contextx"
 )
+
+func TestSaveClipboardImage(t *testing.T) {
+	a := NewApp()
+	a.cfgDir = t.TempDir()
+	png := []byte{0x89, 'P', 'N', 'G'}
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+	path, err := a.SaveClipboardImage(dataURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(png) || filepath.Ext(path) != ".png" {
+		t.Fatalf("saved clipboard image = %q at %q", got, path)
+	}
+}
 
 func TestDefaultModel(t *testing.T) {
 	tests := []struct {

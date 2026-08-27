@@ -62,9 +62,6 @@ func (s *Supervisor) StartSession(ctx context.Context, worktreeID, provider, mod
 	case agent.ProviderClaude:
 		ad = agent.NewClaude(opts)
 	case agent.ProviderCodex:
-		if existing, err := s.store.ActiveSessionInWorktree(worktreeID, provider); err == nil && existing != nil {
-			return nil, fmt.Errorf("a codex session is already active in this worktree (%s)", existing.ID)
-		}
 		ad = agent.NewCodex(opts)
 	default:
 		return nil, fmt.Errorf("unknown provider %q", provider)

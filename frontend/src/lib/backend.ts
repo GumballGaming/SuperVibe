@@ -69,6 +69,10 @@ export async function openDirectoryDialog(title: string): Promise<string> {
   }
 }
 
+export async function saveClipboardImage(dataURL: string): Promise<string> {
+  return call<string>("SaveClipboardImage", dataURL);
+}
+
 async function call<T>(method: string, ...args: unknown[]): Promise<T> {
   const app = goApp();
   if (!app || typeof app[method] !== "function") {

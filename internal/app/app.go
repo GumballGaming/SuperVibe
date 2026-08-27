@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -40,6 +42,7 @@ type SessionEvent struct {
 
 const eventTopic = "agent:event"
 const defaultCodexModel = "gpt-5.6-sol"
+const maxClipboardImageBytes = 10 * 1024 * 1024
 
 var defaultSettings = map[string]string{
 	"paths.claude":          "",
@@ -126,6 +129,54 @@ func (a *App) OpenMultipleFilesDialog(title string) ([]string, error) {
 		return nil, fmt.Errorf("app not started")
 	}
 	return openMultipleFilesDialog(a.ctx, title)
+}
+
+// SaveClipboardImage stores a pasted image in SuperVibe's attachment cache and
+// returns its path so it can use the same attachment flow as picked files.
+func (a *App) SaveClipboardImage(dataURL string) (string, error) {
+	const prefix = "data:"
+	if !strings.HasPrefix(dataURL, prefix) {
+		return "", fmt.Errorf("clipboard data is not an image")
+	}
+	header, encoded, ok := strings.Cut(dataURL[len(prefix):], ",")
+	if !ok || !strings.HasSuffix(header, ";base64") {
+		return "", fmt.Errorf("unsupported clipboard image format")
+	}
+	mime := strings.TrimSuffix(header, ";base64")
+	extensions := map[string]string{
+		"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif",
+		"image/webp": ".webp", "image/bmp": ".bmp", "image/avif": ".avif",
+	}
+	ext, ok := extensions[mime]
+	if !ok {
+		return "", fmt.Errorf("unsupported clipboard image type %q", mime)
+	}
+	if len(encoded) > base64.StdEncoding.EncodedLen(maxClipboardImageBytes)+4 {
+		return "", fmt.Errorf("clipboard image is too large (maximum %d MB)", maxClipboardImageBytes/(1024*1024))
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", fmt.Errorf("decode clipboard image: %w", err)
+	}
+	if len(data) > maxClipboardImageBytes {
+		return "", fmt.Errorf("clipboard image is too large (maximum %d MB)", maxClipboardImageBytes/(1024*1024))
+	}
+	dir := filepath.Join(a.cfgDir, "attachments")
+	if a.cfgDir == "" {
+		dir = filepath.Join(os.TempDir(), "SuperVibe", "attachments")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create attachment cache: %w", err)
+	}
+	var nameBytes [12]byte
+	if _, err := rand.Read(nameBytes[:]); err != nil {
+		return "", fmt.Errorf("create attachment name: %w", err)
+	}
+	path := filepath.Join(dir, fmt.Sprintf("clipboard-%x%s", nameBytes, ext))
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return "", fmt.Errorf("save clipboard image: %w", err)
+	}
+	return path, nil
 }
 
 func (a *App) ListProjects() ([]ProjectTree, error) {
