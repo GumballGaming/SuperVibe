@@ -1,4 +1,4 @@
-import { Minus, Square, X, Zap } from "lucide-react";
+import { Minus, Square, X } from "lucide-react";
 import { windowControls } from "../lib/backend";
 
 export default function TitleBar() {
@@ -6,7 +6,7 @@ export default function TitleBar() {
   return (
     <div className="titlebar">
       <div className="titlebar__brand">
-        <Zap size={14} className="titlebar__logo-icon" />
+        <img src="/appicon.png" className="titlebar__logo-icon" alt="" draggable={false} />
         SuperVibe
       </div>
       <div className="titlebar__controls">

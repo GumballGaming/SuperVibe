@@ -63,11 +63,14 @@ type App struct {
 	mu          sync.Mutex
 	turnOptions map[string]agent.TurnOptions
 	cfgDir      string
+	termMu      sync.Mutex
+	terms       map[string]*TerminalSession
 }
 
 func NewApp() *App {
 	return &App{
 		turnOptions: map[string]agent.TurnOptions{},
+		terms:       map[string]*TerminalSession{},
 	}
 }
 
@@ -91,6 +94,7 @@ func (a *App) Startup(ctx context.Context) {
 }
 
 func (a *App) Shutdown(ctx context.Context) {
+	a.stopAllTerminals()
 	if a.sup != nil {
 		a.sup.StopAll()
 	}
@@ -335,7 +339,7 @@ func (a *App) SetSettings(values map[string]string) error {
 func (a *App) DetectCLIs() (map[string]bool, error) {
 	settings, _ := a.GetSettings()
 	return map[string]bool{
-		"git":      lookPath("git"),
+		"git":    lookPath("git"),
 		"claude": lookPath(firstNonEmpty(settings["paths.claude"], "claude")),
 		"codex":  lookPath(firstNonEmpty(settings["paths.codex"], "codex")),
 	}, nil
@@ -368,12 +372,70 @@ func lookPath(name string) bool {
 	if name == "" {
 		return false
 	}
-	if strings.ContainsRune(name, '/') || strings.ContainsRune(name, '\\') {
+	if strings.ContainsAny(name, `/\`) {
 		_, err := os.Stat(name)
 		return err == nil
 	}
-	_, err := exec.LookPath(name)
-	return err == nil
+	if _, err := exec.LookPath(name); err == nil {
+		return true
+	}
+	for _, dir := range commonBinDirs() {
+		for _, ext := range binExts {
+			p := filepath.Join(dir, name+ext)
+			if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// resolveBin returns a path that can be handed to exec.Command: the absolute
+// location when found on PATH or in a common shim dir, otherwise the original
+// name ("claude" etc. so the normal error path still shows something useful).
+func resolveBin(name string) string {
+	if name == "" {
+		return ""
+	}
+	if strings.ContainsAny(name, `/\`) {
+		if _, err := os.Stat(name); err == nil {
+			return name
+		}
+		return name
+	}
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	for _, dir := range commonBinDirs() {
+		for _, ext := range binExts {
+			p := filepath.Join(dir, name+ext)
+			if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+				return p
+			}
+		}
+	}
+	return name
+}
+
+var binExts = []string{".exe", ".cmd", ".bat", ""}
+
+func commonBinDirs() []string {
+	var dirs []string
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		dirs = append(dirs, filepath.Join(appData, "npm"))
+		dirs = append(dirs, filepath.Join(appData, "pnpm"))
+	}
+	if local := os.Getenv("LOCALAPPDATA"); local != "" {
+		dirs = append(dirs, filepath.Join(local, "pnpm"))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs,
+			filepath.Join(home, ".bun", "bin"),
+			filepath.Join(home, ".local", "bin"),
+			filepath.Join(home, ".cargo", "bin"),
+		)
+	}
+	return dirs
 }
 
 func (a *App) StartSession(worktreeID, provider, model string) (*store.Session, error) {
@@ -402,8 +464,8 @@ func (a *App) buildOptions(worktreeID, provider string) (agent.Options, error) {
 		WorktreePath:         wt.Path,
 		ClaudePermissionMode: settings["claude.permissionMode"],
 		CodexSandbox:         settings["codex.sandbox"],
-		ClaudePath:           firstNonEmpty(settings["paths.claude"], "claude"),
-		CodexPath:            firstNonEmpty(settings["paths.codex"], "codex"),
+		ClaudePath:           resolveBin(firstNonEmpty(settings["paths.claude"], "claude")),
+		CodexPath:            resolveBin(firstNonEmpty(settings["paths.codex"], "codex")),
 	}
 	return opts, nil
 }
@@ -645,6 +707,8 @@ type DiffResult struct {
 	Patch string `json:"patch"`
 }
 
+const maxDiffPatchBytes = 300 * 1024
+
 func (a *App) GetDiff(worktreeID string) (*DiffResult, error) {
 	wt, err := a.store.GetWorktree(worktreeID)
 	if err != nil {
@@ -658,11 +722,71 @@ func (a *App) GetDiff(worktreeID string) (*DiffResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	const maxPatch = 300 * 1024
-	if len(patch) > maxPatch {
-		patch = patch[:maxPatch] + "\n… truncated"
+	return &DiffResult{Stat: stat, Patch: truncatePatch(patch)}, nil
+}
+
+// GetSessionDiff returns the diff of everything that changed since the
+// session's baseline (agent commits plus uncommitted worktree edits).
+func (a *App) GetSessionDiff(sessionID string) (*DiffResult, error) {
+	sess, err := a.store.GetSession(sessionID)
+	if err != nil {
+		return nil, err
 	}
-	return &DiffResult{Stat: stat, Patch: patch}, nil
+	wt, err := a.store.GetWorktree(sess.WorktreeID)
+	if err != nil {
+		return nil, err
+	}
+	from := sess.BaselineHead
+	if from == "" {
+		from = "HEAD"
+	}
+	stat, err := gitx.DiffRangeStat(wt.Path, from)
+	if err != nil {
+		return nil, err
+	}
+	patch, err := gitx.DiffRange(wt.Path, from)
+	if err != nil {
+		return nil, err
+	}
+	return &DiffResult{Stat: stat, Patch: truncatePatch(patch)}, nil
+}
+
+func truncatePatch(patch string) string {
+	if len(patch) > maxDiffPatchBytes {
+		return patch[:maxDiffPatchBytes] + "\n… truncated"
+	}
+	return patch
+}
+
+func (a *App) GitStage(worktreeID string, paths []string) error {
+	wt, err := a.store.GetWorktree(worktreeID)
+	if err != nil {
+		return err
+	}
+	return gitx.Stage(wt.Path, paths)
+}
+
+func (a *App) GitUnstage(worktreeID string, paths []string) error {
+	wt, err := a.store.GetWorktree(worktreeID)
+	if err != nil {
+		return err
+	}
+	return gitx.Unstage(wt.Path, paths)
+}
+
+func (a *App) GitCommit(worktreeID, message string) error {
+	wt, err := a.store.GetWorktree(worktreeID)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(message) == "" {
+		return errors.New("commit message is empty")
+	}
+	return gitx.Commit(wt.Path, message)
+}
+
+func (a *App) ForkSession(sessionID string, upToMessageID int64) (*store.Session, error) {
+	return a.store.ForkSession(sessionID, upToMessageID)
 }
 
 func (a *App) GetOutputTail(sessionID string, maxBytes int) (string, error) {

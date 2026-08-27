@@ -7,6 +7,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 )
 
@@ -72,7 +75,17 @@ func startProc(ctx context.Context, name string, args []string, dir string) (*pr
 }
 
 func startProcEnv(ctx context.Context, name string, args []string, dir string, extraEnv []string) (*proc, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmdPath := name
+	cmdArgs := args
+	if runtime.GOOS == "windows" {
+		// Npm/pnpm shims are .cmd/.bat files. When handed an absolute shim
+		// path, os/exec can't execute it directly — route via cmd /c.
+		if ext := strings.ToLower(filepath.Ext(name)); ext == ".cmd" || ext == ".bat" {
+			cmdPath = "cmd"
+			cmdArgs = append([]string{"/c", name}, args...)
+		}
+	}
+	cmd := exec.CommandContext(ctx, cmdPath, cmdArgs...)
 	cmd.Dir = dir
 	if len(extraEnv) > 0 {
 		cmd.Env = append(environ(), extraEnv...)

@@ -17,7 +17,7 @@ import type {
 } from "../lib/types";
 
 export type ViewMode = "fleet" | "workspace";
-export type Tab = "chat" | "diff" | "output";
+export type Tab = "chat" | "diff" | "output" | "terminal";
 
 export type DialogState =
   | { kind: "addProject" }

@@ -143,6 +143,12 @@ export interface ProviderHealth {
   detail?: string;
 }
 
+export interface TerminalEvent {
+  id: string;
+  kind: "started" | "output" | "exit";
+  data: string;
+}
+
 export interface PermissionRequest {
   requestID: string;
   tool: string;

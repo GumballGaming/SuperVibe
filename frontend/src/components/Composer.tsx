@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, BrainCircuit, Paperclip, RefreshCw, Sparkles, Square, X, Zap } from "lucide-react";
+import { ArrowUp, BrainCircuit, Paperclip, RefreshCw, Square, X, Zap } from "lucide-react";
 import { api, openFileDialog } from "../lib/backend";
 import { parseMentions } from "../lib/format";
 import Dropdown from "./Dropdown";
+import ModelLogo from "./ModelLogo";
 import { useStore } from "../state/store";
 
 const MENTION_TOKENS = ["diff", "git", "tree"];
@@ -65,7 +66,15 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
       : []),
     ...models
       .filter((modelInfo, index, all) => all.findIndex((candidate) => candidate.id === modelInfo.id) === index)
-      .map((m) => ({ value: m.id, label: m.label })),
+      .map((m) => ({
+        value: m.id,
+        label: (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <ModelLogo provider={provider} modelId={m.id} size={13} />
+            {m.label}
+          </span>
+        ),
+      })),
   ];
   useEffect(() => {
     setSelectedModel(session?.model || (session?.provider === "codex" ? DEFAULT_CODEX_MODEL : ""));
@@ -211,12 +220,7 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
         className={`composer__inner${fastMode ? " composer__inner--fast" : ""}${provider === "claude" && thinking === "ultracode" ? " composer__inner--ultracode" : ""}`}
         style={{ position: "relative" }}
       >
-        {showAttach && (
-          <button className="icon-btn" style={{ marginBottom: 2 }} title="Attach files" onClick={() => void pickFiles()}>
-            <Paperclip size={14} />
-          </button>
-        )}
-        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+        <div className="composer__body">
           {files.length > 0 && (
             <div className="files-pill-row">
               {files.map((f) => (
@@ -272,10 +276,6 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
           />
           <div className="composer__controls">
             <label className="composer__control composer__control--model" title="Model used for the next message">
-              <span className="composer__control-label">
-                <Sparkles size={12} />
-                <span>Model</span>
-              </span>
               <Dropdown
                 value={selectedModel}
                 options={modelOptions}
@@ -293,7 +293,7 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
                 title="Use the model's faster service tier for the next message"
                 onClick={toggleFast}
               >
-                <Zap size={12} />
+                <Zap size={13} />
                 Fast
               </button>
             )}
@@ -304,9 +304,8 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
                 }`}
                 title="Reasoning effort for the next message"
               >
-                <span className="composer__control-label">
-                  <BrainCircuit size={12} />
-                  <span>Thinking</span>
+                <span className="composer__control-icon">
+                  <BrainCircuit size={13} />
                 </span>
                 <Dropdown
                   value={thinking}
@@ -318,13 +317,36 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
               </label>
             )}
             <button
-              className="icon-btn composer__refresh"
+              className="composer__refresh"
               title="Refresh models"
               onClick={() => void refreshModelList()}
               disabled={!provider || refreshingModels}
             >
-              <RefreshCw size={12} className={refreshingModels ? "spin" : undefined} />
+              <RefreshCw size={13} className={refreshingModels ? "spin" : undefined} />
             </button>
+            <div className="composer__controls-end">
+              {showAttach && (
+                <button className="icon-btn" title="Attach files" onClick={() => void pickFiles()}>
+                  <Paperclip size={14} />
+                </button>
+              )}
+              {busy ? (
+                <button
+                  className="send-btn send-btn--stop"
+                  title="Interrupt agent"
+                  onClick={() => {
+                    void api.interruptSession(sessionId).catch(() => undefined);
+                    api.stopSession(sessionId).catch(() => undefined);
+                  }}
+                >
+                  <Square size={13} fill="currentColor" />
+                </button>
+              ) : (
+                <button className="send-btn" disabled={!text.trim()} onClick={send} title="Send">
+                  <ArrowUp size={15} strokeWidth={2.5} />
+                </button>
+              )}
+            </div>
           </div>
         </div>
         {mentionQuery !== null && mentionItems.length > 0 && (
@@ -369,22 +391,6 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
               </button>
             ))}
           </div>
-        )}
-        {busy ? (
-          <button
-            className="send-btn send-btn--stop"
-            title="Interrupt agent"
-            onClick={() => {
-              void api.interruptSession(sessionId).catch(() => undefined);
-              api.stopSession(sessionId).catch(() => undefined);
-            }}
-          >
-            <Square size={13} fill="currentColor" />
-          </button>
-        ) : (
-          <button className="send-btn" disabled={!text.trim()} onClick={send} title="Send">
-            <ArrowUp size={15} strokeWidth={2.5} />
-          </button>
         )}
       </div>
       <div className="hint">Enter to send · Shift+Enter for newline · @ to mention files</div>

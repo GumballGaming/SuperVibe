@@ -1,6 +1,7 @@
 package gitx
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
@@ -50,6 +51,32 @@ func run(dir string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), msg, err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// runStdout is like run but returns only stdout, so stderr noise
+// (git advice warnings such as line-ending notices) never pollutes output.
+func runStdout(dir string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("git %s: timed out", strings.Join(args, " "))
+		}
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		}
+		return "", fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), msg, err)
+	}
+	return strings.TrimSpace(stdout.String()), nil
 }
 
 func IsRepo(dir string) bool {
@@ -213,7 +240,7 @@ func StatusSummary(dir string) (*Status, error) {
 }
 
 func diffArgs(dir string) []string {
-	args := []string{"--no-pager", "diff"}
+	args := []string{"--no-pager", "diff", "--no-ext-diff", "--color=never"}
 	if _, err := run(dir, "rev-parse", "--verify", "--quiet", "HEAD"); err == nil {
 		args = append(args, "HEAD")
 	} else {
@@ -222,10 +249,58 @@ func diffArgs(dir string) []string {
 	return args
 }
 
+func diffRangeArgs(_dir, from string) []string {
+	args := []string{"--no-pager", "diff", "--no-ext-diff", "--color=never"}
+	if from == "" {
+		return append(args, "--root")
+	}
+	return append(args, from)
+}
+
 func DiffStat(dir string) (string, error) {
-	return run(dir, append(diffArgs(dir), "--stat")...)
+	return runStdout(dir, append(diffArgs(dir), "--stat")...)
 }
 
 func DiffPatch(dir string) (string, error) {
-	return run(dir, diffArgs(dir)...)
+	return runStdout(dir, diffArgs(dir)...)
+}
+
+// DiffRange shows the diff between an arbitrary ref and the current worktree
+// state (committed changes + uncommitted edits). An empty ref falls back to
+// the initial commit.
+func DiffRange(dir, from string) (string, error) {
+	return runStdout(dir, diffRangeArgs(dir, from)...)
+}
+
+// DiffRangeStat is the --stat view for the same range as DiffRange.
+func DiffRangeStat(dir, from string) (string, error) {
+	return runStdout(dir, append(diffRangeArgs(dir, from), "--stat")...)
+}
+
+// Stage stages all changes in dir, or the given paths when non-empty.
+func Stage(dir string, paths []string) error {
+	if len(paths) == 0 {
+		_, err := run(dir, "add", "-A")
+		return err
+	}
+	args := append([]string{"add", "--"}, paths...)
+	_, err := run(dir, args...)
+	return err
+}
+
+// Unstage removes all changes from the index, or the given paths when non-empty.
+func Unstage(dir string, paths []string) error {
+	if len(paths) == 0 {
+		_, err := run(dir, "reset")
+		return err
+	}
+	args := append([]string{"reset", "--"}, paths...)
+	_, err := run(dir, args...)
+	return err
+}
+
+// Commit records the staged changes with the provided message.
+func Commit(dir, message string) error {
+	_, err := run(dir, "commit", "-m", message)
+	return err
 }

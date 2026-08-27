@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
-import { X } from "lucide-react";
+import { Copy, FileMinus2, FilePlus2, FileText, RefreshCw, X } from "lucide-react";
 import { api } from "../lib/backend";
+import type { DiffLine, DiffFile, StatSummary } from "../lib/diff";
+import { parsePatch, parseStat, TRUNCATED_MARKER } from "../lib/diff";
 import type { DiffResult } from "../lib/types";
 import { useStore } from "../state/store";
 
@@ -13,6 +15,8 @@ export default function DiffView({
 }) {
   const [diff, setDiff] = useState<DiffResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
   const tab = useStore((s) => s.tab);
   const pushToast = useStore((s) => s.pushToast);
   const baselineSession = useStore((s) => (sessionId ? s.sessions[sessionId] : undefined));
@@ -32,9 +36,15 @@ export default function DiffView({
           if (alive) {
             setDiff(d);
             setError(null);
+            setLoading(false);
           }
         })
-        .catch((e) => alive && setError(String(e)));
+        .catch((e) => {
+          if (alive) {
+            setError(String(e));
+            setLoading(false);
+          }
+        });
     };
     load();
     const t = setInterval(load, 4000);
@@ -42,7 +52,7 @@ export default function DiffView({
       alive = false;
       clearInterval(t);
     };
-  }, [worktreeId, sessionId, sessionMode, tab]);
+  }, [worktreeId, sessionId, sessionMode, tab, refreshKey]);
 
   const stageAll = async () => {
     try {
@@ -69,9 +79,34 @@ export default function DiffView({
     }
   };
 
+  const copyPatch = (patch: string | undefined | null) => {
+    if (!patch) return;
+    void navigator.clipboard.writeText(patch);
+    pushToast({ kind: "success", title: "Patch copied" });
+  };
+
+  const summary = diff ? parseStat(diff.stat) : null;
+  const files = diff ? parsePatch(diff.patch) : [];
+
   return (
     <div className="diff-view">
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+      <div className="diff-view__toolbar">
+        <span className="diff-view__title">
+          {sessionMode ? "Session changes" : "Uncommitted changes"}
+        </span>
+        <span style={{ flex: 1 }} />
+        <button
+          className="icon-btn"
+          style={{ width: 26, height: 26 }}
+          title="Refresh diff"
+          disabled={loading}
+          onClick={() => {
+            setLoading(true);
+            setRefreshKey((k) => k + 1);
+          }}
+        >
+          <RefreshCw size={13} className={loading ? "tool-row__spin" : undefined} />
+        </button>
         <button className="btn" onClick={() => void stageAll()}>
           Stage all
         </button>
@@ -108,48 +143,94 @@ export default function DiffView({
         <div className="msg-system">{cleanError(error)}</div>
       ) : !diff ? (
         <div style={{ color: "var(--text-muted)" }}>Loading…</div>
+      ) : files.length === 0 ? (
+        <div className="diff-empty">
+          <span style={{ fontSize: 15 }}>✓</span>
+          <span>{summary && summary.files > 0 ? "Binary changes only" : "No changes against HEAD"}</span>
+        </div>
       ) : (
         <>
-          <pre className="diff-stat">{diff.stat || "No changes against HEAD"}</pre>
-          <Patch patch={diff.patch} />
-          {diff.patch && (
-            <button
-              className="btn"
-              style={{ marginTop: 12 }}
-              onClick={() => {
-                void navigator.clipboard.writeText(diff.patch);
-                pushToast({ kind: "success", title: "Patch copied" });
-              }}
-            >
+          <DiffSummary summary={summary} />
+          {diff.patch.includes(TRUNCATED_MARKER) && (
+            <div className="diff-truncated">Diff is large — showing first ~300 KB only.</div>
+          )}
+          {files.map((file) => (
+            <DiffFileCard key={file.path + file.raw.length} file={file} onCopy={() => copyPatch(file.raw)} />
+          ))}
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <button className="btn" onClick={() => copyPatch(diff.patch)}>
               Copy patch
             </button>
-          )}
+          </div>
         </>
       )}
     </div>
   );
 }
 
-function Patch({ patch }: { patch: string }) {
-  if (!patch) return null;
-  const lines = patch.split("\n");
+function DiffSummary({ summary }: { summary: StatSummary | null }) {
+  if (!summary) return null;
   return (
-    <div className="patch">
-      {lines.map((line, i) => {
-        const cls = line.startsWith("+") && !line.startsWith("+++")
-          ? "add"
-          : line.startsWith("-") && !line.startsWith("---")
-            ? "del"
-            : line.startsWith("@@") || line.startsWith("diff ") || line.startsWith("index ")
-              ? "meta-line"
-              : undefined;
-        return (
-          <span key={i} className={cls}>
-            {line}
-            {"\n"}
-          </span>
-        );
-      })}
+    <div className="diff-summary">
+      <span className="diff-summary__chip">
+        {summary.files} file{summary.files === 1 ? "" : "s"} changed
+      </span>
+      {summary.insertions > 0 && (
+        <span className="diff-summary__chip diff-summary__chip--add">+{summary.insertions}</span>
+      )}
+      {summary.deletions > 0 && (
+        <span className="diff-summary__chip diff-summary__chip--del">−{summary.deletions}</span>
+      )}
+    </div>
+  );
+}
+
+function DiffFileCard({ file, onCopy }: { file: DiffFile; onCopy: () => void }) {
+  return (
+    <div className="diff-file">
+      <div className="diff-file__head">
+        <span className="diff-file__icon">
+          {file.status === "added" ? (
+            <FilePlus2 size={13} />
+          ) : file.status === "deleted" ? (
+            <FileMinus2 size={13} />
+          ) : (
+            <FileText size={13} />
+          )}
+        </span>
+        <span className="diff-file__path" title={file.path}>
+          {file.path}
+        </span>
+        {file.binary && <span className="diff-file__badge">binary</span>}
+        {file.additions > 0 && <span className="diff-file__cnt diff-file__cnt--add">+{file.additions}</span>}
+        {file.deletions > 0 && <span className="diff-file__cnt diff-file__cnt--del">−{file.deletions}</span>}
+        <button className="icon-btn diff-file__copy" title="Copy file patch" onClick={onCopy}>
+          <Copy size={12} />
+        </button>
+      </div>
+      {file.binary && (
+        <div className="diff-file__binary">Binary file — patch omitted</div>
+      )}
+      {file.hunks.map((hunk, i) => (
+        <div key={i} className="diff-hunk">
+          <div className="diff-hunk__header">{hunk.header}</div>
+          {hunk.lines.map((line, j) => (
+            <DiffRow key={j} line={line} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DiffRow({ line }: { line: DiffLine }) {
+  const sign = line.kind === "add" ? "+" : line.kind === "del" ? "−" : line.kind === "meta" ? "" : " ";
+  return (
+    <div className={`diff-line diff-line--${line.kind}`}>
+      <span className="diff-line__no">{line.oldNo ?? ""}</span>
+      <span className="diff-line__no">{line.newNo ?? ""}</span>
+      <span className="diff-line__sign">{sign}</span>
+      <span className="diff-line__text">{line.text}</span>
     </div>
   );
 }

@@ -82,6 +82,7 @@ export default function App() {
         if (e.altKey && e.key === "1") st.setTab("chat");
         else if (e.altKey && e.key === "2") st.setTab("diff");
         else if (e.altKey && e.key === "3") st.setTab("output");
+        else if (e.altKey && e.key === "4") st.setTab("terminal");
       }
     };
     window.addEventListener("keydown", onKey);

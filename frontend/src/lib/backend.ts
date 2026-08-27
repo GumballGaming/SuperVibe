@@ -102,6 +102,15 @@ export const api = {
   getOutputTail: (sessionId: string, maxBytes: number) =>
     call<string>("GetOutputTail", sessionId, maxBytes),
 
+  startTerminal: (worktreeId: string) => call<string>("StartTerminal", worktreeId),
+  terminalInput: (worktreeId: string, data: string) =>
+    call<void>("TerminalInput", worktreeId, data),
+  terminalResize: (worktreeId: string, cols: number, rows: number) =>
+    call<void>("TerminalResize", worktreeId, cols, rows),
+  closeTerminal: (worktreeId: string) => call<void>("CloseTerminal", worktreeId),
+  getTerminalOutput: (worktreeId: string) =>
+    call<string>("GetTerminalOutput", worktreeId),
+
   detectClis: () => call<Record<string, boolean>>("DetectCLIs"),
   getSettings: () => call<Record<string, string>>("GetSettings"),
   setSettings: (values: Record<string, string>) => call<void>("SetSettings", values),

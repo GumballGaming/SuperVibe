@@ -140,11 +140,11 @@ func (c *Codex) handshake() error {
 func codexSandbox(s string) string {
 	switch s {
 	case "read-only":
-		return "readOnly"
+		return "read-only"
 	case "danger-full-access":
-		return "dangerFullAccess"
+		return "danger-full-access"
 	default:
-		return "workspaceWrite"
+		return "workspace-write"
 	}
 }
 

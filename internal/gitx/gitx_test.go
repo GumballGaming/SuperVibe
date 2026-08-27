@@ -86,6 +86,41 @@ func TestStatusAndDiff(t *testing.T) {
 	}
 }
 
+func TestStageUnstageCommit(t *testing.T) {
+	root := gitInit(t)
+	os.WriteFile(filepath.Join(root, "a.txt"), []byte("a\n"), 0o644)
+	os.WriteFile(filepath.Join(root, "b.txt"), []byte("b\n"), 0o644)
+
+	if err := Stage(root, nil); err != nil {
+		t.Fatal(err)
+	}
+	st, err := StatusSummary(root)
+	if err != nil || st.Staged < 2 {
+		t.Fatalf("stage all: %+v %v", st, err)
+	}
+	if err := Unstage(root, nil); err != nil {
+		t.Fatal(err)
+	}
+	st, err = StatusSummary(root)
+	if err != nil || st.Staged != 0 {
+		t.Fatalf("unstage all: %+v %v", st, err)
+	}
+	if err := Stage(root, []string{"a.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = StatusSummary(root)
+	if st.Staged != 1 {
+		t.Fatalf("stage one: %+v", st)
+	}
+	if err := Commit(root, "added a"); err != nil {
+		t.Fatal(err)
+	}
+	st, err = StatusSummary(root)
+	if err != nil || st.Staged != 0 || st.Untracked != 1 {
+		t.Fatalf("after commit: %+v %v", st, err)
+	}
+}
+
 func TestDiffWithoutHEAD(t *testing.T) {
 	root := gitInitUnborn(t)
 

@@ -5,11 +5,13 @@ import {
   Folder,
   GitBranch,
   GitFork,
+  GitPullRequest,
   Network,
   Pencil,
   TerminalSquare,
   Wrench,
   Copy,
+  X,
 } from "lucide-react";
 import { useStore } from "../state/store";
 import { api } from "../lib/backend";
@@ -18,6 +20,7 @@ import Markdown from "./Markdown";
 import Composer from "./Composer";
 import DiffView from "./DiffView";
 import OutputView from "./OutputView";
+import TerminalView from "./TerminalView";
 import PermCard from "./PermCard";
 import { providerLabel, truncate } from "../lib/format";
 import { toolAction } from "../state/store";
@@ -34,6 +37,11 @@ export default function Workspace() {
   const forkSession = useStore((s) => s.forkSession);
   const loadedSessions = useStore((s) => s.loadedSessions);
   const [forking, setForking] = useState(false);
+  const [railWidths, setRailWidths] = useState<Record<string, number>>({
+    diff: 380,
+    output: 380,
+    terminal: 660,
+  });
 
   const wt = useMemo(() => {
     for (const pt of projects) {
@@ -91,6 +99,24 @@ export default function Workspace() {
   }
 
   const parent = session?.parentId ? sessions[session.parentId] : undefined;
+
+  const railKey = tab === "chat" ? "diff" : tab;
+  const railWidth = railWidths[railKey] ?? 380;
+  const startRailDrag = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = railWidth;
+    const move = (ev: PointerEvent) => {
+      const w = Math.min(980, Math.max(300, startW + (startX - ev.clientX)));
+      setRailWidths((ws) => ({ ...ws, [railKey]: w }));
+    };
+    const up = () => {
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", up);
+    };
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", up);
+  };
 
   return (
     <div className="workspace">
@@ -155,29 +181,80 @@ export default function Workspace() {
             </>
           )}
         </div>
+        <div className="rail-toggles">
+          <button
+            className={`pill rail-toggle ${tab === "diff" ? "pill--active" : ""}`}
+            title="Open diff in sidebar (Alt+2)"
+            onClick={() => setTab(tab === "diff" ? "chat" : "diff")}
+          >
+            <GitPullRequest size={12.5} />
+            Diff
+          </button>
+          <button
+            className={`pill rail-toggle ${tab === "output" ? "pill--active" : ""}`}
+            title={session ? "Open output in sidebar (Alt+3)" : "Select a session to see its raw output"}
+            disabled={!session}
+            onClick={() => setTab(tab === "output" ? "chat" : "output")}
+          >
+            <TerminalSquare size={12.5} />
+            Output
+          </button>
+          <button
+            className={`pill rail-toggle ${tab === "terminal" ? "pill--active" : ""}`}
+            title="Open terminal in sidebar (Alt+4)"
+            onClick={() => setTab(tab === "terminal" ? "chat" : "terminal")}
+          >
+            <TerminalSquare size={12.5} />
+            Terminal
+          </button>
+        </div>
       </div>
 
-      <div className="tabs">
-        <button className={`tab ${tab === "chat" ? "tab--active" : ""}`} onClick={() => setTab("chat")}>
-          Chat
-        </button>
-        <button className={`tab ${tab === "diff" ? "tab--active" : ""}`} onClick={() => setTab("diff")}>
-          Diff
-        </button>
-        <button className={`tab ${tab === "output" ? "tab--active" : ""}`} onClick={() => setTab("output")}>
-          Output
-        </button>
-      </div>
-
-      <div className="workspace__content">
-        {!session ? (
-          <FileTreeEmptyState worktreeId={wt.worktree.id} />
-        ) : tab === "chat" ? (
-          <ChatPane sessionId={session.id} />
-        ) : tab === "diff" ? (
-          <DiffView worktreeId={wt.worktree.id} sessionId={session.id} />
-        ) : (
-          <OutputView sessionId={session.id} />
+      <div className="workspace__body">
+        <div className="workspace__main">
+          {!session ? (
+            <FileTreeEmptyState worktreeId={wt.worktree.id} />
+          ) : (
+            <ChatPane sessionId={session.id} />
+          )}
+        </div>
+        {tab !== "chat" && (
+          <div className="rail-resize" onPointerDown={startRailDrag} title="Drag to resize (Double click to reset)" onDoubleClick={() => setRailWidths((ws) => ({ ...ws, [railKey]: railKey === "terminal" ? 660 : 380 }))} />
+        )}
+        {tab !== "chat" && (
+          <aside className="right-rail" style={{ width: railWidth }}>
+            <div className="tabs right-rail__tabs">
+              <button className={`tab ${tab === "diff" ? "tab--active" : ""}`} onClick={() => setTab("diff")}>
+                Diff
+              </button>
+              <button
+                className={`tab ${tab === "output" ? "tab--active" : ""}`}
+                disabled={!session}
+                onClick={() => setTab("output")}
+              >
+                Output
+              </button>
+              <button
+                className={`tab ${tab === "terminal" ? "tab--active" : ""}`}
+                onClick={() => setTab("terminal")}
+              >
+                Terminal
+              </button>
+              <span style={{ flex: 1 }} />
+              <button className="icon-btn" style={{ width: 24, height: 24 }} title="Close sidebar (Alt+1)" onClick={() => setTab("chat")}>
+                <X size={12} />
+              </button>
+            </div>
+            <div className="right-rail__view">
+              {tab === "diff" ? (
+                <DiffView worktreeId={wt.worktree.id} sessionId={session?.id} />
+              ) : tab === "terminal" ? (
+                <TerminalView worktreeId={wt.worktree.id} />
+              ) : (
+                <OutputView sessionId={session?.id} />
+              )}
+            </div>
+          </aside>
         )}
       </div>
     </div>
