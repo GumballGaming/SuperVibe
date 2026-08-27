@@ -98,6 +98,8 @@ export interface Branch {
 export interface DiffResult {
   stat: string;
   patch: string;
+  stagedStat?: string;
+  stagedPatch?: string;
   baselineHead?: string;
 }
 

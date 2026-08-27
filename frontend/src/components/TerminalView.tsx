@@ -9,14 +9,13 @@ export default function TerminalView({ worktreeId }: { worktreeId: string }) {
   const [running, setRunning] = useState(false);
   const [cwd, setCwd] = useState<string | null>(null);
   const [output, setOutput] = useState("");
-  const [cmd, setCmd] = useState("");
-  const [history, setHistory] = useState<string[]>([]);
-  const [histIdx, setHistIdx] = useState(-1);
+  const [inputValue, setInputValue] = useState("");
   const [syncing, setSyncing] = useState(true);
   const subscribedRef = useRef<(() => void) | null>(null);
   const outputRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
+  const inputQueueRef = useRef(Promise.resolve());
 
   const attach = useCallback(
     (sync: boolean) => {
@@ -68,6 +67,7 @@ export default function TerminalView({ worktreeId }: { worktreeId: string }) {
     setOutput("");
     setCwd(null);
     setRunning(false);
+    setInputValue("");
     void start();
     return () => {
       subscribedRef.current?.();
@@ -78,6 +78,10 @@ export default function TerminalView({ worktreeId }: { worktreeId: string }) {
     const el = outputRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [output, running, syncing]);
+
+  useEffect(() => {
+    if (running && !syncing) inputRef.current?.focus();
+  }, [running, syncing]);
 
   useEffect(() => {
     const el = bodyRef.current;
@@ -107,17 +111,49 @@ export default function TerminalView({ worktreeId }: { worktreeId: string }) {
     return () => ro.disconnect();
   }, [worktreeId]);
 
-  const run = async () => {
-    const line = cmd.trim();
-    if (!line || !running || syncing) return;
-    setCmd("");
-    setHistory((h) => [line, ...h]);
-    setHistIdx(-1);
-    try {
-      await api.terminalInput(worktreeId, line + "\n");
-    } catch (e) {
-      setOutput((o) => o + `\n[terminal] input failed: ${String(e)}\n`);
+  const sendInput = (data: string) => {
+    if (!data || !running || syncing) return;
+    inputQueueRef.current = inputQueueRef.current
+      .then(() => api.terminalInput(worktreeId, data))
+      .catch((e) => {
+        setOutput((o) => o + `\n[terminal] input failed: ${String(e)}\n`);
+      });
+  };
+
+  const controlSequence = (event: React.KeyboardEvent<HTMLInputElement>): string | null => {
+    if (event.ctrlKey && event.key.length === 1) {
+      const code = event.key.toUpperCase().charCodeAt(0);
+      if (code >= 64 && code <= 95) return String.fromCharCode(code - 64);
     }
+    if (event.altKey && event.key.length === 1) return `\x1b${event.key}`;
+    return {
+      Enter: "\r",
+      Backspace: "\x7f",
+      Delete: "\x1b[3~",
+      Tab: "\t",
+      Escape: "\x1b",
+      ArrowUp: "\x1b[A",
+      ArrowDown: "\x1b[B",
+      ArrowRight: "\x1b[C",
+      ArrowLeft: "\x1b[D",
+      Home: "\x1b[H",
+      End: "\x1b[F",
+      PageUp: "\x1b[5~",
+      PageDown: "\x1b[6~",
+      Insert: "\x1b[2~",
+    }[event.key] ?? null;
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!running || syncing) {
+      event.preventDefault();
+      return;
+    }
+    const sequence = controlSequence(event);
+    if (sequence === null) return;
+    event.preventDefault();
+    setInputValue("");
+    sendInput(sequence);
     inputRef.current?.focus();
   };
 
@@ -142,11 +178,6 @@ export default function TerminalView({ worktreeId }: { worktreeId: string }) {
       <div className="terminal__header">
         <TerminalSquare size={12.5} />
         <span className="terminal__title">Terminal</span>
-        {running && (
-          <span className="terminal__live" title="Shell is running">
-            live
-          </span>
-        )}
         {cwd && (
           <span className="terminal__dir" title={cwd}>
             {cwd}
@@ -171,41 +202,33 @@ export default function TerminalView({ worktreeId }: { worktreeId: string }) {
         outputRef.current = el;
       }}>
         {!running && output === "" && (
-          <div className="terminal__dead">Shell exited — press restart to open a new one.</div>
+          <div className="terminal__dead">Shell exited - press restart to open a new one.</div>
         )}
-        {syncing && <div className="terminal__dead">Starting shell…</div>}
+        {syncing && <div className="terminal__dead">Starting shell...</div>}
         <pre className="terminal__out">{output}</pre>
       </div>
-      <div className="terminal__input-row">
-        <span className="terminal__prompt">❯</span>
+      <div
+        className={`terminal__input-row${running && !syncing ? " terminal__input-row--active" : ""}`}
+        onClick={() => inputRef.current?.focus()}
+      >
+        <span className="terminal__prompt" aria-hidden="true">&#x276F;</span>
         <input
           ref={inputRef}
           className="terminal__input"
-          placeholder={running ? "Run a command…" : "Shell is not running — restart to use the terminal"}
-          value={cmd}
-          disabled={!running}
+          aria-label="Interactive terminal input"
+          placeholder={running ? "Type directly into the shell..." : "Shell is not running - restart to use the terminal"}
+          value={inputValue}
+          disabled={!running || syncing}
           spellCheck={false}
           autoCapitalize="off"
           autoCorrect="off"
-          onChange={(e) => setCmd(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              void run();
-            } else if (e.key === "ArrowUp" && history.length > 0) {
-              e.preventDefault();
-              const next = Math.min(histIdx + 1, history.length - 1);
-              setHistIdx(next);
-              setCmd(history[next] ?? "");
-            } else if (e.key === "ArrowDown") {
-              e.preventDefault();
-              const next = histIdx - 1;
-              setHistIdx(next);
-              setCmd(next >= 0 ? history[next] : "");
-            }
+          onChange={(e) => {
+            sendInput(e.target.value);
+            setInputValue("");
           }}
+          onKeyDown={handleKeyDown}
         />
-        <span className="terminal__keys">Enter to run</span>
+        <span className="terminal__keys">Interactive shell / Ctrl+C to interrupt</span>
       </div>
     </div>
   );

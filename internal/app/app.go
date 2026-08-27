@@ -703,8 +703,10 @@ func (a *App) ListFleet(statuses []string) ([]store.FleetRow, error) {
 }
 
 type DiffResult struct {
-	Stat  string `json:"stat"`
-	Patch string `json:"patch"`
+	Stat        string `json:"stat"`
+	Patch       string `json:"patch"`
+	StagedStat  string `json:"stagedStat"`
+	StagedPatch string `json:"stagedPatch"`
 }
 
 const maxDiffPatchBytes = 300 * 1024
@@ -722,7 +724,20 @@ func (a *App) GetDiff(worktreeID string) (*DiffResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &DiffResult{Stat: stat, Patch: truncatePatch(patch)}, nil
+	stagedStat, err := gitx.DiffCachedStat(wt.Path)
+	if err != nil {
+		return nil, err
+	}
+	stagedPatch, err := gitx.DiffCachedPatch(wt.Path)
+	if err != nil {
+		return nil, err
+	}
+	return &DiffResult{
+		Stat:        stat,
+		Patch:       truncatePatch(patch),
+		StagedStat:  stagedStat,
+		StagedPatch: truncatePatch(stagedPatch),
+	}, nil
 }
 
 // GetSessionDiff returns the diff of everything that changed since the
@@ -774,7 +789,7 @@ func (a *App) GitUnstage(worktreeID string, paths []string) error {
 	return gitx.Unstage(wt.Path, paths)
 }
 
-func (a *App) GitCommit(worktreeID, message string) error {
+func (a *App) GitCommit(worktreeID, message string, amend bool) error {
 	wt, err := a.store.GetWorktree(worktreeID)
 	if err != nil {
 		return err
@@ -782,7 +797,18 @@ func (a *App) GitCommit(worktreeID, message string) error {
 	if strings.TrimSpace(message) == "" {
 		return errors.New("commit message is empty")
 	}
+	if amend {
+		return gitx.AmendCommit(wt.Path, message)
+	}
 	return gitx.Commit(wt.Path, message)
+}
+
+func (a *App) GetRecentCommits(worktreeID string, limit int) ([]gitx.CommitInfo, error) {
+	wt, err := a.store.GetWorktree(worktreeID)
+	if err != nil {
+		return nil, err
+	}
+	return gitx.RecentCommits(wt.Path, limit)
 }
 
 func (a *App) ForkSession(sessionID string, upToMessageID int64) (*store.Session, error) {

@@ -96,7 +96,8 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
       nextEfforts.includes(current) ? current : nextEfforts.includes("medium") ? "medium" : nextEfforts[0] ?? "",
     );
   };
-  const supportsFastMode = Boolean(provider) && (!selectedModel || selectedModelInfo?.fastMode === true);
+  const supportsFastMode =
+    provider === "claude" || Boolean(provider) && (!selectedModel || selectedModelInfo?.fastMode === true);
 
   const toggleFast = () => {
     setFastMode((current) => !current);

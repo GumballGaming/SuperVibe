@@ -135,7 +135,8 @@ export const api = {
 
   gitStage: (worktreeId: string, paths?: string[]) => call<void>("GitStage", worktreeId, paths),
   gitUnstage: (worktreeId: string, paths?: string[]) => call<void>("GitUnstage", worktreeId, paths),
-  gitCommit: (worktreeId: string, message: string) => call<void>("GitCommit", worktreeId, message),
+  gitCommit: (worktreeId: string, message: string, amend = false) =>
+    call<void>("GitCommit", worktreeId, message, amend),
   revertSessionChanges: (sessionId: string) => call<void>("RevertSessionChanges", sessionId),
   getSessionDiff: (sessionId: string) => call<DiffResult>("GetSessionDiff", sessionId),
   getRecentCommits: (worktreeId: string, n: number) =>

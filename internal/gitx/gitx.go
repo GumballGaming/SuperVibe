@@ -265,6 +265,18 @@ func DiffPatch(dir string) (string, error) {
 	return runStdout(dir, diffArgs(dir)...)
 }
 
+func DiffCachedStat(dir string) (string, error) {
+	return runStdout(dir, append(cachedDiffArgs(), "--stat")...)
+}
+
+func DiffCachedPatch(dir string) (string, error) {
+	return runStdout(dir, cachedDiffArgs()...)
+}
+
+func cachedDiffArgs() []string {
+	return []string{"--no-pager", "diff", "--cached", "--no-ext-diff", "--color=never"}
+}
+
 // DiffRange shows the diff between an arbitrary ref and the current worktree
 // state (committed changes + uncommitted edits). An empty ref falls back to
 // the initial commit.
@@ -303,4 +315,39 @@ func Unstage(dir string, paths []string) error {
 func Commit(dir, message string) error {
 	_, err := run(dir, "commit", "-m", message)
 	return err
+}
+
+func AmendCommit(dir, message string) error {
+	_, err := run(dir, "commit", "--amend", "-m", message)
+	return err
+}
+
+type CommitInfo struct {
+	Sha    string `json:"sha"`
+	Subject string `json:"subject"`
+	Author string `json:"author"`
+	When   int64  `json:"when"`
+}
+
+func RecentCommits(dir string, limit int) ([]CommitInfo, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	out, err := runStdout(dir, "log", "-n", strconv.Itoa(limit), "--format=%H%x1f%an%x1f%ct%x1f%s")
+	if err != nil {
+		return nil, err
+	}
+	commits := make([]CommitInfo, 0, limit)
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.SplitN(line, "\x1f", 4)
+		if len(fields) != 4 {
+			continue
+		}
+		when, parseErr := strconv.ParseInt(fields[2], 10, 64)
+		if parseErr != nil {
+			continue
+		}
+		commits = append(commits, CommitInfo{Sha: fields[0], Author: fields[1], When: when, Subject: fields[3]})
+	}
+	return commits, nil
 }
