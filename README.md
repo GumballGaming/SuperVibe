@@ -4,10 +4,6 @@
   <img src="https://i.imgur.com/uvClQ25.png" alt="Renasine Studios" width="100%">
 </p>
 
-<p align="center">
-  <strong>Built by Renasine Studios</strong>
-</p>
-
 SuperVibe is an open-source desktop environment for working with AI coding agents.
 
 Built with **Go**, **Wails**, **TypeScript**, and **Bun**, SuperVibe provides a fast native desktop experience for managing projects, agents, terminals, diffs, and development workflows from one interface.
