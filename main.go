@@ -29,12 +29,6 @@ func main() {
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
-		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId: "supervibe-desktop",
-			OnSecondInstanceLaunch: func(options.SecondInstanceData) {
-				a.ShowWindow()
-			},
-		},
 		OnStartup:  a.Startup,
 		OnShutdown: a.Shutdown,
 		Bind: []interface{}{

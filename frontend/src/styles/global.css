@@ -180,6 +180,12 @@ textarea:focus {
   padding-left: 14px;
   background: var(--background);
   -webkit-app-region: drag;
+  --wails-draggable: drag;
+  cursor: grab;
+}
+
+.titlebar:active {
+  cursor: grabbing;
 }
 
 .titlebar__brand {
@@ -205,6 +211,8 @@ textarea:focus {
   display: flex;
   height: 100%;
   -webkit-app-region: no-drag;
+  --wails-draggable: no-drag;
+  cursor: default;
 }
 
 .titlebar__btn {

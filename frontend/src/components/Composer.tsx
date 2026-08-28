@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent } from "react";
 import { ArrowUp, BrainCircuit, Paperclip, RefreshCw, Square, X, Zap } from "lucide-react";
-import { api, openFileDialog } from "../lib/backend";
+import { api, openFileDialog, saveClipboardImage } from "../lib/backend";
 import { parseMentions } from "../lib/format";
 import Dropdown from "./Dropdown";
 import ModelLogo from "./ModelLogo";
@@ -174,6 +174,26 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
     }
   };
 
+  const pasteImage = async (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const imageItem = Array.from(event.clipboardData.items).find((item) => item.type.startsWith("image/"));
+    if (!imageItem) return;
+    const image = imageItem.getAsFile();
+    if (!image) return;
+    event.preventDefault();
+    try {
+      const dataURL = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error ?? new Error("could not read clipboard image"));
+        reader.readAsDataURL(image);
+      });
+      const path = await saveClipboardImage(dataURL);
+      setFiles((fs) => (fs.includes(path) ? fs : [...fs, path]));
+    } catch (error) {
+      pushToast({ kind: "error", title: "Could not paste image", detail: String(error) });
+    }
+  };
+
   const refreshModelList = async () => {
     if (!provider) return;
     setRefreshingModels(true);
@@ -245,6 +265,7 @@ export default function Composer({ sessionId, busy }: { sessionId: string; busy:
             placeholder={busy ? "Agent is working… you can queue a follow-up" : "Send a task to the agent"}
             value={text}
             onChange={(e) => applyText(e.target.value)}
+            onPaste={(e) => void pasteImage(e)}
             onKeyDown={(e) => {
               if (mentionQuery !== null && mentionItems.length > 0) {
                 if (e.key === "ArrowDown") {
