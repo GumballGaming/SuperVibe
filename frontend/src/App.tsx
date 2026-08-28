@@ -18,6 +18,15 @@ export default function App() {
   useEffect(() => {
     void init();
   }, [init]);
+
+  useEffect(() => {
+    if (!ready) return;
+    void api.checkForUpdate().then(async (update) => {
+      if (!update.available || !update.downloadUrl) return;
+      const install = window.confirm(`SuperVibe ${update.latest} is available. Install it now?`);
+      if (install) await api.installUpdate(update.downloadUrl);
+    }).catch(() => undefined);
+  }, [ready]);
   useEffect(() => {
     let cancelled = false;
     api

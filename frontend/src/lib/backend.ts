@@ -15,6 +15,13 @@ import type {
   WorktreeInfo,
 } from "./types";
 
+export interface UpdateInfo {
+  available: boolean;
+  current: string;
+  latest: string;
+  downloadUrl?: string;
+}
+
 type GoApp = Record<string, (...args: unknown[]) => Promise<unknown>>;
 
 interface WailsRuntime {
@@ -82,6 +89,8 @@ async function call<T>(method: string, ...args: unknown[]): Promise<T> {
 }
 
 export const api = {
+	checkForUpdate: () => call<UpdateInfo>("CheckForUpdate"),
+	installUpdate: (downloadUrl: string) => call<void>("InstallUpdate", downloadUrl),
   listProjects: () => call<ProjectTree[]>("ListProjects"),
   addProject: (path: string) => call<ProjectTree>("AddProject", path),
   removeProject: (id: string) => call<void>("RemoveProject", id),
