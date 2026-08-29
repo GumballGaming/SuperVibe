@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -24,12 +24,6 @@ const (
 var (
 	errAppNotStarted   = fmt.Errorf("app not started")
 	terminalNotRunning = fmt.Errorf("terminal not running")
-
-	// ANSI escape sequences are stripped before streaming to the plain-text
-	// UI so colors/cursor-controls never render as garbage.
-	ansiCSI    = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
-	ansiOSC    = regexp.MustCompile(`\x1b\][^\x07]*(?:\x07|\x1b\\)?`)
-	ansiSingle = regexp.MustCompile(`\x1b[()][0-9A-Z]`)
 )
 
 // TerminalEvent is streamed to the frontend on terminal:event.
@@ -106,7 +100,9 @@ func (a *App) StartTerminal(worktreeID string) (string, error) {
 		return existing.id, nil
 	}
 
-	wt, err := a.store.GetWorktree(worktreeID)
+	// A pane may provide a unique key (`worktree::pane`) so multiple shells
+	// can run in the same worktree without sharing a PTY.
+	wt, err := a.store.GetWorktree(baseWorktreeID(worktreeID))
 	if err != nil {
 		return "", err
 	}
@@ -222,14 +218,32 @@ func (a *App) emitTerminal(id, kind, data string) {
 	wailsruntime.EventsEmit(a.ctx, terminalEventTopic, TerminalEvent{ID: id, Kind: kind, Data: data})
 }
 
+// pumpTerminal forwards PTY output verbatim. xterm owns escape sequence
+// interpretation: dropping or rewriting cursor movement and erase sequences
+// here is what makes interactive TUIs render as duplicated garbage.
 func (a *App) pumpTerminal(term *TerminalSession, r io.Reader) {
 	buf := make([]byte, terminalReadChunk)
+	var pending []byte
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
-			data := cleanTerminalOutput(string(buf[:n]))
-			term.append(data)
-			a.emitTerminal(term.id, "output", data)
+			chunk := buf[:n]
+			if len(pending) > 0 {
+				chunk = append(append([]byte(nil), pending...), chunk...)
+				pending = nil
+			}
+			// A read can end in the middle of a multi-byte rune. Hold that tail
+			// back so it travels with the rest of the sequence instead of being
+			// split into invalid halves by JSON encoding.
+			if tail := incompleteUTFTail(chunk); len(tail) > 0 {
+				pending = append(pending, tail...)
+				chunk = chunk[:len(chunk)-len(tail)]
+			}
+			if len(chunk) > 0 {
+				data := string(chunk)
+				term.append(data)
+				a.emitTerminal(term.id, "output", data)
+			}
 		}
 		if err != nil {
 			return
@@ -237,13 +251,31 @@ func (a *App) pumpTerminal(term *TerminalSession, r io.Reader) {
 	}
 }
 
-// cleanTerminalOutput strips ANSI escapes so the browser pre-renderer can
-// display the stream as plain text.
-func cleanTerminalOutput(s string) string {
-	s = ansiOSC.ReplaceAllString(s, "")
-	s = ansiCSI.ReplaceAllString(s, "")
-	s = ansiSingle.ReplaceAllString(s, "")
-	return s
+// incompleteUTFTail returns the trailing bytes of b that begin a rune the
+// chunk does not finish, so the caller can re-emit them with the next read.
+func incompleteUTFTail(b []byte) []byte {
+	max := 3
+	if len(b) < max {
+		max = len(b)
+	}
+	for i := 1; i <= max; i++ {
+		tail := b[len(b)-i:]
+		if !utf8.RuneStart(tail[0]) {
+			continue
+		}
+		if !utf8.FullRune(tail) {
+			return tail
+		}
+		return nil
+	}
+	return nil
+}
+
+// baseWorktreeID resolves the worktree a terminal id belongs to. Terminal ids
+// are `worktreeID` or `worktreeID::paneID`, where the pane suffix lets one
+// worktree run up to six independent shells.
+func baseWorktreeID(terminalID string) string {
+	return strings.SplitN(terminalID, "::", 2)[0]
 }
 
 // terminalShell picks the default shell for the platform.

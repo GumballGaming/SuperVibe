@@ -31,6 +31,7 @@ export default function App() {
     };
   }, []);
 
+
   useEffect(() => {
     const preventNativeContextMenu = (event: MouseEvent) => {
       event.preventDefault();
@@ -83,6 +84,7 @@ export default function App() {
         else if (e.altKey && e.key === "2") st.setTab("diff");
         else if (e.altKey && e.key === "3") st.setTab("output");
         else if (e.altKey && e.key === "4") st.setTab("terminal");
+        else if (e.altKey && e.key === "5") st.setTab("workspace");
       }
     };
     window.addEventListener("keydown", onKey);

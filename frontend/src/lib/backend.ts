@@ -150,6 +150,8 @@ export const api = {
     call<string[]>("SearchRepo", worktreeId, query, limit),
   readFileText: (worktreeId: string, relPath: string, maxBytes: number) =>
     call<string>("ReadFileText", worktreeId, relPath, maxBytes),
+  writeFileText: (worktreeId: string, relPath: string, content: string) =>
+    call<void>("WriteFileText", worktreeId, relPath, content),
   sendMessageExtended: (sessionId: string, text: string, mentions: string[], attachmentPaths: string[]) =>
     call<void>("SendMessageExtended", sessionId, text, mentions, attachmentPaths),
   searchSessions: (query: string, limit?: number) =>

@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Bot, ChevronRight, FolderPlus, GitBranch, Layers, Pencil, Plus, Settings, Trash2 } from "lucide-react";
+import { Bot, ChevronRight, FolderPlus, GitBranch, Layers, Pencil, Plus, Settings, Trash2, TerminalSquare, Sparkles } from "lucide-react";
 import { useStore } from "../state/store";
 import { providerLabel } from "../lib/format";
+import ProviderLogo from "./ProviderLogo";
 import type { ProjectTree } from "../lib/types";
 
 export default function Sidebar() {
@@ -83,6 +84,12 @@ function ProjectNode({ tree, onSessionContextMenu }: { tree: ProjectTree; onSess
   const selectedWorktreeId = useStore((s) => s.selectedWorktreeId);
   const selectedSession = useStore((s) => s.selectedSession);
   const sessions = useStore((s) => s.sessions);
+  const terminalSessions = useStore((s) => s.terminalSessions);
+  const selectedWorkspaceSession = useStore((s) => s.selectedWorkspaceSession);
+  const createTerminalSession = useStore((s) => s.createTerminalSession);
+  const selectWorkspaceSession = useStore((s) => s.selectWorkspaceSession);
+  const closeTerminalSession = useStore((s) => s.closeTerminalSession);
+  const pushToast = useStore((s) => s.pushToast);
   const selectWorktree = useStore((s) => s.selectWorktree);
   const openSession = useStore((s) => s.openSession);
   const setDialog = useStore((s) => s.setDialog);
@@ -105,6 +112,12 @@ function ProjectNode({ tree, onSessionContextMenu }: { tree: ProjectTree; onSess
     }
     const rect = event.currentTarget.getBoundingClientRect();
     setProjectMenu({ x: Math.max(6, rect.left), y: rect.bottom + 4 });
+  };
+  const summonTerminal = (worktreeId: string) => {
+    const id = createTerminalSession(worktreeId);
+    setProjectMenu(null);
+    if (id) selectWorkspaceSession(worktreeId, id);
+    else pushToast({ kind: "info", title: "All six terminal slots are in use", detail: "Close one to summon another." });
   };
 
   return (
@@ -148,6 +161,7 @@ function ProjectNode({ tree, onSessionContextMenu }: { tree: ProjectTree; onSess
               <GitBranch size={13} />
               New Worktree
             </button>
+            <button onClick={() => summonTerminal(selectedWorktreeId && tree.worktrees.some((wt) => wt.id === selectedWorktreeId) ? selectedWorktreeId : tree.worktrees[0]?.id || "")}><TerminalSquare size={13} />Terminal</button>
           </div>
         )}
       </div>
@@ -162,6 +176,7 @@ function ProjectNode({ tree, onSessionContextMenu }: { tree: ProjectTree; onSess
             );
             const errored = wtSessions.some((s) => s.status === "error");
             const isSelected = selectedWorktreeId === wt.id;
+            const wtTerminals = Object.values(terminalSessions).filter((terminal) => terminal.worktreeId === wt.id);
 
             return (
               <div className="worktree-group" key={wt.id}>
@@ -188,16 +203,16 @@ function ProjectNode({ tree, onSessionContextMenu }: { tree: ProjectTree; onSess
                   {wtSessions.length > 0 && <span className="worktree__count">{wtSessions.length}</span>}
                 </button>
 
-                {wtSessions.length > 0 && (
+                {(wtSessions.length > 0 || wtTerminals.length > 0) && (
                   <div className="worktree__agents">
                     {wtSessions.map((session) => {
-                      const selected = selectedSession[wt.id] === session.id;
+                      const selected = selectedWorkspaceSession[wt.id] === session.id || (!selectedWorkspaceSession[wt.id] && selectedSession[wt.id] === session.id);
                       const label = session.title || providerLabel(session.provider);
                       return (
                         <div className="agent-row" key={session.id}>
                           <button
                             className={`agent ${selected ? "agent--active" : ""}`}
-                            onClick={() => void openSession(session.id)}
+                            onClick={() => { window.dispatchEvent(new Event("supervibe:chat-workspace")); void openSession(session.id); }}
                             onContextMenu={(event) => onSessionContextMenu(session.id, event)}
                             title={`${label}${session.model ? ` · ${session.model}` : ""}`}
                           >
@@ -229,9 +244,21 @@ function ProjectNode({ tree, onSessionContextMenu }: { tree: ProjectTree; onSess
                         </div>
                       );
                     })}
+                    {wtTerminals.map((terminal) => (
+                      <div className="agent-row worktree-terminal-row" key={terminal.id}>
+                        <button className={`agent ${selectedWorkspaceSession[wt.id] === terminal.id ? "agent--active" : ""}`} onClick={() => selectWorkspaceSession(wt.id, terminal.id)}>
+                          {terminal.kind === "codex" || terminal.kind === "claude" ? <ProviderLogo provider={terminal.kind} size={12} /> : <TerminalSquare size={12} />}
+                          <span className="agent__label">{terminal.title}</span>
+                          <span className="agent__model">{terminal.kind === "shell" ? "Shell" : terminal.kind === "codex" ? "Codex" : terminal.kind === "claude" ? "Claude Code" : "Setup"}</span>
+                        </button>
+                        <button className="agent__delete" title="Close terminal" onClick={() => closeTerminalSession(terminal.id)}>
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 )}
-              </div>
+                </div>
             );
           })}
         </div>

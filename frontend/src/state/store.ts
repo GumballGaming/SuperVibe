@@ -17,7 +17,36 @@ import type {
 } from "../lib/types";
 
 export type ViewMode = "fleet" | "workspace";
-export type Tab = "chat" | "diff" | "output" | "terminal";
+export type Tab = "chat" | "diff" | "output" | "terminal" | "workspace" | "browser";
+export type TerminalKind = "shell" | "codex" | "claude";
+export interface TerminalSession {
+  id: string;
+  worktreeId: string;
+  title: string;
+  slot: number;
+  kind: TerminalKind | null;
+  detected?: boolean;
+  mode: "auto" | "approve-all" | "manual";
+}
+
+// A worktree owns six fixed terminal slots. A slot keeps its number for the
+// lifetime of the terminal in it, so the numbered tab strip is stable.
+export const TERMINAL_SLOTS = 6;
+export const TERMINAL_SLOT_NUMBERS = Array.from({ length: TERMINAL_SLOTS }, (_, index) => index + 1);
+
+export function terminalsForWorktree(terminals: Record<string, TerminalSession>, worktreeId: string): TerminalSession[] {
+  return Object.values(terminals)
+    .filter((terminal) => terminal.worktreeId === worktreeId)
+    .sort((a, b) => a.slot - b.slot);
+}
+
+function nextFreeSlot(terminals: TerminalSession[], worktreeId: string): number | null {
+  const taken = new Set(terminals.filter((terminal) => terminal.worktreeId === worktreeId).map((terminal) => terminal.slot));
+  for (const slot of TERMINAL_SLOT_NUMBERS) {
+    if (!taken.has(slot)) return slot;
+  }
+  return null;
+}
 
 export type DialogState =
   | { kind: "addProject" }
@@ -59,10 +88,15 @@ interface AppState {
   pendingRequests: PermissionRequest[];
   procLines: Record<string, string[]>;
   settings: Record<string, string>;
+  terminalSessions: Record<string, TerminalSession>;
+  selectedWorkspaceSession: Record<string, string>;
+  // worktreeId -> split key ("${dir}:${path}") -> ratio, see lib/terminalLayout.
+  terminalSplitRatios: Record<string, Record<string, number>>;
 }
 
 interface AppActions {
   init: () => Promise<void>;
+  restoreTerminalSessions: () => void;
   loadAll: () => Promise<void>;
   refreshProjects: () => Promise<void>;
   refreshSessionLists: () => Promise<void>;
@@ -86,6 +120,53 @@ interface AppActions {
   forkSession: (id: string, upToMessageId: number) => Promise<Session | null>;
   spawnSubagent: (parentId: string, task: string, provider: string, model: string) => Promise<Session | null>;
   retryLast: (id: string) => Promise<void>;
+  selectWorkspaceSession: (worktreeId: string, sessionId: string) => void;
+  createTerminalSession: (worktreeId: string, slot?: number) => string | null;
+  createTerminalBatch: (worktreeId: string, count: number, kind: TerminalKind) => string[];
+  configureTerminalBatch: (id: string, count: number, kind: TerminalKind) => string[];
+  configureTerminalSession: (id: string, kind: TerminalKind) => void;
+  setTerminalKind: (id: string, kind: TerminalKind) => void;
+  updateTerminalWorktree: (id: string, worktreeId: string) => void;
+  closeTerminalSession: (id: string) => void;
+  setTerminalSplitRatio: (worktreeId: string, key: string, ratio: number) => void;
+  resetTerminalSplitRatio: (worktreeId: string, key: string) => void;
+}
+
+const TERMINAL_LAYOUT_STORAGE_KEY = "supervibe.terminal-layout.v1";
+
+interface PersistedTerminalLayout {
+  terminalSessions: Record<string, TerminalSession>;
+  selectedWorkspaceSession: Record<string, string>;
+  selectedWorktreeId: string | null;
+  terminalSplitRatios: Record<string, Record<string, number>>;
+}
+
+function persistTerminalLayout(state: Pick<AppState, "terminalSessions" | "selectedWorkspaceSession" | "selectedWorktreeId" | "terminalSplitRatios">): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(TERMINAL_LAYOUT_STORAGE_KEY, JSON.stringify({
+      terminalSessions: state.terminalSessions,
+      selectedWorkspaceSession: state.selectedWorkspaceSession,
+      selectedWorktreeId: state.selectedWorktreeId,
+      terminalSplitRatios: state.terminalSplitRatios,
+    } satisfies PersistedTerminalLayout));
+  } catch {
+    // Storage may be unavailable in restricted WebView/private browsing modes.
+  }
+}
+
+/** Ratios are cheap to keep but meaningless once a worktree is gone. */
+function readSplitRatios(raw: Record<string, Record<string, number>> | undefined, worktreeIds: Set<string>): Record<string, Record<string, number>> {
+  const out: Record<string, Record<string, number>> = {};
+  for (const [worktreeId, ratios] of Object.entries(raw || {})) {
+    if (!worktreeIds.has(worktreeId) || !ratios) continue;
+    const clean: Record<string, number> = {};
+    for (const [key, ratio] of Object.entries(ratios)) {
+      if (typeof ratio === "number" && Number.isFinite(ratio)) clean[key] = Math.min(0.9, Math.max(0.1, ratio));
+    }
+    if (Object.keys(clean).length) out[worktreeId] = clean;
+  }
+  return out;
 }
 
 let toastSeq = 1;
@@ -390,6 +471,9 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
   pendingRequests: [],
   procLines: {},
   settings: {},
+  terminalSessions: {},
+  selectedWorkspaceSession: {},
+  terminalSplitRatios: {},
 
   async init() {
     await get().refreshSettings();
@@ -433,6 +517,7 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
       }));
     });
     await get().loadAll();
+    get().restoreTerminalSessions();
     await get().detectClis();
     try {
       set({ permissions: await api.getPermissions() });
@@ -444,6 +529,59 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
 
   async loadAll() {
     await Promise.all([get().refreshProjects(), get().refreshSessionLists()]);
+  },
+
+  restoreTerminalSessions() {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(TERMINAL_LAYOUT_STORAGE_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as {
+        terminalSessions?: Record<string, Partial<TerminalSession>>;
+        selectedWorkspaceSession?: Record<string, string>;
+        selectedWorktreeId?: string | null;
+        terminalSplitRatios?: Record<string, Record<string, number>>;
+      };
+      const worktreeIds = new Set(get().projects.flatMap((project) => project.worktrees.map((worktree) => worktree.id)));
+      const terminalSessions: Record<string, TerminalSession> = {};
+      const occupied = new Set<string>();
+      for (const [id, terminal] of Object.entries(saved.terminalSessions || {})) {
+        const restoredWorktreeId = terminal?.worktreeId;
+        if (!terminal || !restoredWorktreeId || !worktreeIds.has(restoredWorktreeId)) continue;
+        const slot = Number(terminal.slot);
+        const kind = terminal.kind === "shell" || terminal.kind === "codex" || terminal.kind === "claude" ? terminal.kind : null;
+        const slotKey = `${restoredWorktreeId}:${slot}`;
+        if (!id || !Number.isInteger(slot) || slot < 1 || slot > TERMINAL_SLOTS || occupied.has(slotKey)) continue;
+        occupied.add(slotKey);
+        terminalSessions[id] = {
+          id,
+          worktreeId: restoredWorktreeId,
+          title: terminal.title || `Terminal ${slot}`,
+          slot,
+          kind,
+          detected: false,
+          mode: terminal.mode === "approve-all" || terminal.mode === "manual" ? terminal.mode : "auto",
+        };
+      }
+      const selectedWorkspaceSession = Object.fromEntries(
+        Object.entries(saved.selectedWorkspaceSession || {}).filter(([worktreeId, terminalId]) =>
+          terminalSessions[terminalId]?.worktreeId === worktreeId,
+        ),
+      );
+      const selectedWorktreeId = saved.selectedWorktreeId && worktreeIds.has(saved.selectedWorktreeId)
+        ? saved.selectedWorktreeId
+        : Object.values(terminalSessions)[0]?.worktreeId || null;
+      set({
+        terminalSessions,
+        selectedWorkspaceSession,
+        selectedWorktreeId,
+        terminalSplitRatios: readSplitRatios(saved.terminalSplitRatios, worktreeIds),
+        tab: selectedWorktreeId && Object.values(terminalSessions).some((terminal) => terminal.worktreeId === selectedWorktreeId) ? "terminal" : get().tab,
+        view: selectedWorktreeId ? "workspace" : get().view,
+      });
+    } catch {
+      // Ignore malformed or unavailable persisted terminal state.
+    }
   },
 
   async refreshProjects() {
@@ -490,9 +628,179 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
   },
 
   selectWorktree(id) {
-    set({ selectedWorktreeId: id, view: "workspace", tab: "chat" });
     const sid = id ? get().selectedSession[id] : null;
+    set((s) => ({ selectedWorktreeId: id, view: "workspace", tab: "chat", selectedWorkspaceSession: id && sid ? { ...s.selectedWorkspaceSession, [id]: sid } : s.selectedWorkspaceSession }));
+    persistTerminalLayout(get());
     if (sid) void get().openSession(sid);
+  },
+
+  selectWorkspaceSession(worktreeId, sessionId) {
+    set((s) => ({ selectedWorktreeId: worktreeId, selectedWorkspaceSession: { ...s.selectedWorkspaceSession, [worktreeId]: sessionId }, view: "workspace", tab: "chat" }));
+    persistTerminalLayout(get());
+  },
+
+  createTerminalSession(worktreeId, slot) {
+    const terminals = Object.values(get().terminalSessions);
+    const target = slot ?? nextFreeSlot(terminals, worktreeId);
+    if (target === null || target < 1 || target > TERMINAL_SLOTS) return null;
+    if (terminals.some((item) => item.worktreeId === worktreeId && item.slot === target)) return null;
+    const id = `terminal-${crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+    set((s) => ({ terminalSessions: { ...s.terminalSessions, [id]: { id, worktreeId, title: `Terminal ${target}`, slot: target, kind: null, mode: "auto" } }, selectedWorkspaceSession: { ...s.selectedWorkspaceSession, [worktreeId]: id }, tab: "chat", view: "workspace" }));
+    persistTerminalLayout(get());
+    return id;
+  },
+
+  createTerminalBatch(worktreeId, count, kind) {
+    const requested = Math.max(1, Math.min(TERMINAL_SLOTS, Math.floor(count) || 1));
+    const bySlot = new Map<number, TerminalSession>();
+    for (const terminal of Object.values(get().terminalSessions)) {
+      if (terminal.worktreeId === worktreeId) bySlot.set(terminal.slot, terminal);
+    }
+
+    // The batch claims the lowest `requested` slots, so asking for N always
+    // yields N terminals. An empty slot is filled; a slot whose terminal is
+    // still unconfigured (sitting on the setup pane) is adopted into the batch
+    // rather than left behind. A slot already running a terminal is never
+    // replaced - it is only reported as kept.
+    const created: TerminalSession[] = [];
+    const adopted: TerminalSession[] = [];
+    let kept = 0;
+    for (const slot of TERMINAL_SLOT_NUMBERS.slice(0, requested)) {
+      const occupant = bySlot.get(slot);
+      if (!occupant) {
+        const id = `terminal-${crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+        created.push({ id, worktreeId, title: `Terminal ${slot}`, slot, kind, mode: "auto" as const });
+      } else if (occupant.kind === null) {
+        adopted.push({ ...occupant, kind, detected: false, title: occupant.title || `Terminal ${occupant.slot}` });
+      } else {
+        kept += 1;
+      }
+    }
+
+    const changed = [...created, ...adopted];
+    if (changed.length) {
+      set((s) => ({
+        terminalSessions: {
+          ...s.terminalSessions,
+          ...Object.fromEntries(changed.map((terminal) => [terminal.id, terminal])),
+        },
+        selectedWorktreeId: worktreeId,
+        selectedWorkspaceSession: { ...s.selectedWorkspaceSession, [worktreeId]: changed[0].id },
+        tab: "terminal",
+        view: "workspace",
+      }));
+      persistTerminalLayout(get());
+    }
+    if (kept) {
+      get().pushToast({ kind: "info", title: `Kept ${kept} existing terminal${kept === 1 ? "" : "s"}`, detail: "Slots already running a terminal were left alone." });
+    }
+    return changed.map((terminal) => terminal.id);
+  },
+
+  configureTerminalBatch(id, count, kind) {
+    const requested = Math.max(1, Math.min(TERMINAL_SLOTS, Math.floor(count) || 1));
+    const source = get().terminalSessions[id];
+    if (!source) return [];
+    const existing = Object.values(get().terminalSessions);
+    const available = TERMINAL_SLOT_NUMBERS.filter((slot) =>
+      !existing.some((terminal) => terminal.id !== id && terminal.worktreeId === source.worktreeId && terminal.slot === slot),
+    );
+    const slots = available.slice(0, requested);
+    const created: TerminalSession[] = [];
+    for (const slot of slots) {
+      const terminalId = slot === source.slot ? id : get().createTerminalSession(source.worktreeId, slot);
+      if (terminalId) created.push({ ...get().terminalSessions[terminalId], kind });
+    }
+    if (!created.length) return [];
+    set((s) => {
+      const terminalSessions = { ...s.terminalSessions };
+      for (const terminal of created) terminalSessions[terminal.id] = terminal;
+      return {
+        terminalSessions,
+        selectedWorkspaceSession: { ...s.selectedWorkspaceSession, [source.worktreeId]: created[0].id },
+        tab: "terminal",
+        view: "workspace",
+      };
+    });
+    persistTerminalLayout(get());
+    if (created.length < requested) {
+      get().pushToast({ kind: "info", title: `Created ${created.length} of ${requested} terminals`, detail: "No existing terminals were replaced." });
+    }
+    return created.map((terminal) => terminal.id);
+  },
+
+  configureTerminalSession(id, kind) {
+    set((s) => {
+      const terminal = s.terminalSessions[id];
+      if (!terminal) return s;
+      return { terminalSessions: { ...s.terminalSessions, [id]: { ...terminal, kind, detected: false, title: terminal.title || `Terminal ${terminal.slot}` } } };
+    });
+    persistTerminalLayout(get());
+  },
+
+  setTerminalKind(id, kind) {
+    set((s) => {
+      const terminal = s.terminalSessions[id];
+      if (!terminal || (terminal.kind === kind && terminal.detected)) return s;
+      return { terminalSessions: { ...s.terminalSessions, [id]: { ...terminal, kind, detected: true } } };
+    });
+    persistTerminalLayout(get());
+  },
+
+  updateTerminalWorktree(id, worktreeId) {
+    set((s) => {
+      const terminal = s.terminalSessions[id];
+      if (!terminal) return s;
+      return { terminalSessions: { ...s.terminalSessions, [id]: { ...terminal, worktreeId } } };
+    });
+    persistTerminalLayout(get());
+  },
+
+  closeTerminalSession(id) {
+    const terminal = get().terminalSessions[id];
+    if (!terminal) return;
+    void api.closeTerminal(`${terminal.worktreeId}::${terminal.id}`).catch(() => undefined);
+    set((s) => {
+      const terminalSessions = { ...s.terminalSessions }; delete terminalSessions[id];
+      const selectedWorkspaceSession = { ...s.selectedWorkspaceSession };
+      if (selectedWorkspaceSession[terminal.worktreeId] === id) {
+        // Fall back to the neighbouring slot that is still open (lower slot
+        // first) so closing one terminal does not blank the workspace.
+        const remaining = terminalsForWorktree(terminalSessions, terminal.worktreeId);
+        const next = remaining.filter((item) => item.slot < terminal.slot).sort((a, b) => b.slot - a.slot)[0] ?? remaining[0];
+        if (next) selectedWorkspaceSession[terminal.worktreeId] = next.id;
+        else delete selectedWorkspaceSession[terminal.worktreeId];
+      }
+      return { terminalSessions, selectedWorkspaceSession };
+    });
+    persistTerminalLayout(get());
+  },
+
+  setTerminalSplitRatio(worktreeId, key, ratio) {
+    if (!Number.isFinite(ratio)) return;
+    set((s) => {
+      const current = s.terminalSplitRatios[worktreeId];
+      const next = Math.min(0.9, Math.max(0.1, ratio));
+      if (current?.[key] === next) return s;
+      return {
+        terminalSplitRatios: {
+          ...s.terminalSplitRatios,
+          [worktreeId]: { ...(current || {}), [key]: next },
+        },
+      };
+    });
+    persistTerminalLayout(get());
+  },
+
+  resetTerminalSplitRatio(worktreeId, key) {
+    set((s) => {
+      const current = s.terminalSplitRatios[worktreeId];
+      if (!current || !(key in current)) return s;
+      const next = { ...current };
+      delete next[key];
+      return { terminalSplitRatios: { ...s.terminalSplitRatios, [worktreeId]: next } };
+    });
+    persistTerminalLayout(get());
   },
 
   async openSession(sessionId) {
@@ -501,6 +809,7 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
     set((s) => ({
       selectedWorktreeId: sess.worktreeId,
       selectedSession: { ...s.selectedSession, [sess.worktreeId]: sessionId },
+      selectedWorkspaceSession: { ...s.selectedWorkspaceSession, [sess.worktreeId]: sessionId },
       view: "workspace",
       tab: "chat",
     }));

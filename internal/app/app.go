@@ -881,6 +881,77 @@ func (a *App) SearchRepo(worktreeID, query string, limit int) ([]string, error) 
 	return contextx.FileSearch(wt.Path, query, limit)
 }
 
+func (a *App) ReadFileText(worktreeID, relPath string, maxBytes int) (string, error) {
+	wt, err := a.store.GetWorktree(worktreeID)
+	if err != nil {
+		return "", err
+	}
+	if maxBytes <= 0 || maxBytes > 2*1024*1024 {
+		maxBytes = 250 * 1024
+	}
+	relPath = filepath.Clean(filepath.FromSlash(relPath))
+	if relPath == "." || filepath.IsAbs(relPath) || relPath == ".." || strings.HasPrefix(relPath, ".."+string(filepath.Separator)) {
+		return "", errors.New("invalid repository path")
+	}
+	root, err := filepath.Abs(wt.Path)
+	if err != nil {
+		return "", err
+	}
+	target := filepath.Join(root, relPath)
+	resolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return "", err
+	}
+	resolved, err = filepath.Abs(resolved)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", errors.New("repository path escapes worktree")
+	}
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		return "", err
+	}
+	if len(data) > maxBytes {
+		data = data[:maxBytes]
+	}
+	if !utf8.Valid(data) {
+		return "", errors.New("binary or unsupported file")
+	}
+	return string(data), nil
+}
+
+func (a *App) WriteFileText(worktreeID, relPath, content string) error {
+	wt, err := a.store.GetWorktree(worktreeID)
+	if err != nil {
+		return err
+	}
+	relPath = filepath.Clean(filepath.FromSlash(relPath))
+	if relPath == "." || filepath.IsAbs(relPath) || relPath == ".." || strings.HasPrefix(relPath, ".."+string(filepath.Separator)) {
+		return errors.New("invalid repository path")
+	}
+	root, err := filepath.Abs(wt.Path)
+	if err != nil {
+		return err
+	}
+	target := filepath.Join(root, relPath)
+	parent, err := filepath.EvalSymlinks(filepath.Dir(target))
+	if err != nil {
+		return err
+	}
+	parent, err = filepath.Abs(parent)
+	if err != nil {
+		return err
+	}
+	inside, err := filepath.Rel(root, parent)
+	if err != nil || inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
+		return errors.New("repository path escapes worktree")
+	}
+	return os.WriteFile(filepath.Join(parent, filepath.Base(target)), []byte(content), 0o644)
+}
+
 func defaultModel(provider, model string) string {
 	if provider == string(agent.ProviderCodex) && strings.TrimSpace(model) == "" {
 		return defaultCodexModel

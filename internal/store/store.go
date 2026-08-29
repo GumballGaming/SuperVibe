@@ -347,7 +347,7 @@ func (s *Store) ListSessionsByStatus(statuses []string) ([]FleetRow, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []FleetRow
+	out := make([]FleetRow, 0)
 	for rows.Next() {
 		var r FleetRow
 		var titleLocked, costKnown int

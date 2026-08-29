@@ -7,3 +7,14 @@ frontend/dist/
 dist/
 wailsjs/
 .DS_Store
+# Build artifact: `wails build` generates <Name>-res.syso in the package root and
+# deletes it afterwards; build.ps1 and air stage copies of the objects below
+# there for the duration of a plain `go build`. None of those are committed.
+/*.syso
+# ...but the committed per-architecture resource objects are tracked. They stay
+# in build/windows so they can never sit next to the one Wails generates: two
+# .rsrc sections in a single link fail with "too many .rsrc sections".
+!build/windows/*-res_windows_*.syso
+# Air's working dir + stray local Go cache.
+tmp/
+.tmp-go-cache/

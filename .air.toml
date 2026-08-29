@@ -1,4 +1,4 @@
-﻿#:schema https://json.schemastore.org/any.json
+#:schema https://json.schemastore.org/any.json
 
 root = "."
 tmp_dir = "tmp"
@@ -55,10 +55,29 @@ tmp_dir = "tmp"
 [build.windows]
   # Air executes build commands through Windows PowerShell. Use PowerShell's
   # explicit exit-code check instead of POSIX/cmd.exe && chaining.
-  cmd = "bun run --cwd frontend build; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; go build -tags dev -gcflags \"all=-N -l\" -o ./tmp/main.exe ."
-  # Air stops the old process before this command. Remove its locked binary
-  # explicitly so the next build always starts from a clean executable path.
-  pre_cmd = ['cmd.exe /d /c "if exist tmp\main.exe del /f /q tmp\main.exe"']
+  #
+  # Wails writes <Name>-res.syso (app icon + manifest + version info) into the
+  # package root during `wails build`, then deletes it via `defer os.Remove`
+  # once compilation finishes. A plain `go build` therefore never sees it and
+  # the dev binary falls back to the default Go icon, so stage the committed
+  # resource object into the package root before compiling and drop it again
+  # afterwards.
+  #
+  # GOARCH: the toolchain on PATH is windows/386, but `wails build` targets
+  # windows/amd64 and the .syso it emits is an AMD64 COFF object. A 386 link
+  # rejects it with "unknown relocation type 3", so build for amd64 here to
+  # match the packaged app.
+  #
+  # The staged copy keeps its *_windows_amd64.syso name so Go matches it
+  # per-target: an amd64 build embeds it, while the arm64 sibling in
+  # build/windows is ignored (and vice versa). Staging must be undone in the
+  # finally block: two .rsrc sections in one link fail with "too many .rsrc
+  # sections", which is what a leftover copy does to the next `wails build`.
+  cmd = "$env:GOARCH='amd64'; $env:CGO_ENABLED='0'; Remove-Item .\\*-res*.syso -Force -ErrorAction SilentlyContinue; if (Test-Path build\\windows\\SuperVibe-res_windows_amd64.syso) { Copy-Item build\\windows\\SuperVibe-res_windows_amd64.syso .\\SuperVibe-res_windows_amd64.syso -Force }; try { bun run --cwd frontend build; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; go build -tags dev -gcflags \"all=-N -l\" -o ./tmp/main.exe . } finally { Remove-Item .\\SuperVibe-res_windows_amd64.syso -Force -ErrorAction SilentlyContinue }"
+  # Air stops the old process before this command. Remove its locked binary and
+  # any stale resource object explicitly so the next build always starts from a
+  # clean executable path with exactly one .rsrc section.
+  pre_cmd = ['cmd.exe /d /c "if exist tmp\main.exe del /f /q tmp\main.exe"', 'cmd.exe /d /c "if exist *-res*.syso del /f /q *-res*.syso"']
 
 [color]
   build = "yellow"

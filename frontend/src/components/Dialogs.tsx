@@ -8,6 +8,7 @@ import ProviderLogo from "./ProviderLogo";
 import { providerLabel } from "../lib/format";
 import { cleanError } from "./DiffView";
 import { ACCENT_OPTIONS, applyTheme, THEME_OPTIONS } from "../lib/theme";
+import appPackage from "../../package.json";
 
 export default function Dialogs() {
   const dialog = useStore((s) => s.dialog);
@@ -15,10 +16,11 @@ export default function Dialogs() {
 
   if (!dialog) return null;
   const compactAgentDialog = dialog.kind === "newAgent" || dialog.kind === "subagent";
+  const settingsDialog = dialog.kind === "settings";
   return (
     <div className="modal-overlay" onClick={() => setDialog(null)}>
       <div
-        className={`modal${compactAgentDialog ? " modal--agent" : ""}`}
+        className={`modal${compactAgentDialog ? " modal--agent" : ""}${settingsDialog ? " modal--settings" : ""}`}
         onClick={(e) => e.stopPropagation()}
       >
         {dialog.kind === "addProject" && <AddProject />}
@@ -519,8 +521,6 @@ function SettingsDialog() {
   };
   const theme = values["appearance.theme"] || "dark";
   const accent = values["appearance.accent"] || "orange";
-  const selectedTheme = THEME_OPTIONS.find((option) => option.value === theme);
-
   const save = async () => {
     try {
       await api.setSettings(values);
@@ -541,14 +541,17 @@ function SettingsDialog() {
     <ModalShell
       title="Settings"
       footer={
-        <>
-          <button className="btn" onClick={() => setDialog(null)}>
-            Cancel
-          </button>
-          <button className="btn btn--primary" onClick={() => void save()}>
-            Save changes
-          </button>
-        </>
+        <div className="settings-footer">
+          <span className="settings-footer__version">SuperVibe v{appPackage.version}</span>
+          <div className="settings-footer__actions">
+            <button className="btn" onClick={() => setDialog(null)}>
+              Cancel
+            </button>
+            <button className="btn btn--primary" onClick={() => void save()}>
+              Save changes
+            </button>
+          </div>
+        </div>
       }
     >
       <div className="settings-grid">
@@ -562,20 +565,30 @@ function SettingsDialog() {
               <div className="settings-section__description">Personalize the workspace without changing your layout.</div>
             </div>
           </div>
-          <div className="settings-fields settings-fields--two">
+          <div className="settings-fields">
             <div className="field">
-              <label htmlFor="settings-theme">Theme</label>
-              <Dropdown
-                id="settings-theme"
-                value={theme}
-                options={THEME_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
-                onChange={(value) => setValue("appearance.theme", value)}
-                ariaLabel="Theme"
-              />
-              <div className="field-help">{selectedTheme?.description}</div>
+              <label>Theme</label>
+              <div className="theme-options" role="radiogroup" aria-label="Theme">
+                {THEME_OPTIONS.map((option) => (
+                  <button
+                    className={`theme-option theme-option--${option.value}${theme === option.value ? " theme-option--selected" : ""}`}
+                    key={option.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={theme === option.value}
+                    onClick={() => setValue("appearance.theme", option.value)}
+                  >
+                    <span className="theme-option__preview" aria-hidden="true" />
+                    <span className="theme-option__copy">
+                      <strong>{option.label}</strong>
+                      <small>{option.description}</small>
+                    </span>
+                  </button>
+                ))}
+              </div>
             </div>
             <div className="field">
-              <label>Accent</label>
+              <label>Accent color</label>
               <div className="accent-options" role="radiogroup" aria-label="Accent color">
                 {ACCENT_OPTIONS.map((option) => (
                   <button
@@ -592,6 +605,7 @@ function SettingsDialog() {
                   </button>
                 ))}
               </div>
+              <div className="field-help">Preview changes apply immediately and are saved when you choose Save changes.</div>
             </div>
           </div>
         </section>
@@ -614,6 +628,7 @@ function SettingsDialog() {
                   value={values[field.key] ?? ""}
                   onChange={(e) => setValue(field.key, e.target.value)}
                 />
+                <div className="field-status">{values[field.key] ? "Custom executable" : "Using executable from PATH"}</div>
               </div>
             ))}
           </div>
@@ -642,6 +657,7 @@ function SettingsDialog() {
                 onChange={(value) => setValue("claude.permissionMode", value)}
                 ariaLabel="Claude permission mode"
               />
+              <div className="field-help">Controls when Claude can edit files in this workspace.</div>
             </div>
             <div className="field">
               <label htmlFor="settings-codex-sandbox">Codex sandbox mode</label>
@@ -656,6 +672,7 @@ function SettingsDialog() {
                 onChange={(value) => setValue("codex.sandbox", value)}
                 ariaLabel="Codex sandbox mode"
               />
+              <div className="field-help">Limits the files and commands Codex can access.</div>
             </div>
           </div>
         </section>
