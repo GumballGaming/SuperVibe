@@ -1,6 +1,9 @@
 build/bin/
 frontend/node_modules/
 frontend/dist/
+*.exe
+tmp/
+.git-index-temp
 *.db
 *.db-wal
 *.db-shm

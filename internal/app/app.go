@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -94,6 +95,25 @@ func (a *App) Startup(ctx context.Context) {
 		runtime.EventsEmit(ctx, eventTopic, SessionEvent{SessionID: sessionID, Event: ev})
 	})
 	runtime.LogInfo(ctx, "SuperVibe backend started")
+	go a.checkForAutomaticUpdate()
+}
+
+func (a *App) checkForAutomaticUpdate() {
+	if goruntime.GOOS != "windows" {
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil || !strings.HasPrefix(filepath.Base(exe), "SuperVibe-") {
+		return
+	}
+	info, err := a.CheckForUpdate()
+	if err != nil || !info.Available || info.DownloadURL == "" {
+		return
+	}
+	runtime.LogInfof(a.ctx, "installing update %s", info.Latest)
+	if err := a.InstallUpdate(info.DownloadURL); err != nil {
+		runtime.LogWarningf(a.ctx, "automatic update failed: %v", err)
+	}
 }
 
 func (a *App) Shutdown(ctx context.Context) {
