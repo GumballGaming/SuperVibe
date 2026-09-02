@@ -111,3 +111,12 @@ func TestBuildExtendedPrompt(t *testing.T) {
 		t.Fatalf("prompt = %q", prompt)
 	}
 }
+
+func TestWorktreePathUsesSuperVibeDirectory(t *testing.T) {
+	projectPath := filepath.Join(`C:\projects`, "SuperVibe")
+	want := filepath.Join(`C:\projects`, ".supervibe", "feature-ui")
+
+	if got := worktreePath(projectPath, "feature/ui"); got != want {
+		t.Fatalf("worktreePath() = %q, want %q", got, want)
+	}
+}

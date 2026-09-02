@@ -53,7 +53,6 @@ export default function Workspace() {
   const configureTerminalSession = useStore((s) => s.configureTerminalSession);
   const createTerminalBatch = useStore((s) => s.createTerminalBatch);
   const updateTerminalWorktree = useStore((s) => s.updateTerminalWorktree);
-  const createTerminalSession = useStore((s) => s.createTerminalSession);
   const closeTerminalSession = useStore((s) => s.closeTerminalSession);
   const selectedWorkspaceSession = useStore((s) => s.selectedWorkspaceSession);
   const selectWorkspaceSession = useStore((s) => s.selectWorkspaceSession);
@@ -251,29 +250,25 @@ export default function Workspace() {
               worktreeId={wt.worktree.id}
               terminals={allTerminals}
               activeId={terminal?.id}
-               onFocusPane={focusPane}
-               onSummon={(quantity) => {
-                if (quantity === TERMINAL_SLOTS) {
-                  setPendingTerminalBatch({ worktreeId: wt.worktree.id, count: TERMINAL_SLOTS });
-                  return;
-                }
-                createTerminalSession(wt.worktree.id, quantity);
-               }}
+              onFocusPane={focusPane}
+              onSummon={(count) => {
+                setPendingTerminalBatch({ worktreeId: wt.worktree.id, count });
+              }}
               onClose={(id) => closeTerminalSession(id)}
               onWorktreeChange={(terminalId, worktree) => updateTerminalWorktree(terminalId, worktree)}
               pendingBatch={pendingTerminalBatch}
               onBatchWorktreeChange={(worktreeId) => setPendingTerminalBatch((batch) => batch ? { ...batch, worktreeId } : batch)}
               onBatchCancel={() => setPendingTerminalBatch(null)}
-               onChoose={(terminalId, kind) => {
+              onChoose={(terminalId, kind) => {
                 configureTerminalSession(terminalId, kind);
-               }}
+              }}
               onBatchChoose={(kind) => {
                 if (!pendingTerminalBatch) return;
                 createTerminalBatch(pendingTerminalBatch.worktreeId, pendingTerminalBatch.count, kind);
                 setPendingTerminalBatch(null);
               }}
               onDetectedKind={(terminalId, kind) => setTerminalKind(terminalId, kind)}
-                registerPane={registerPane}
+              registerPane={registerPane}
             />
           </div>
           <div className={`workspace__pane ${terminal ? "workspace__pane--hidden" : ""}`}>
@@ -326,15 +321,17 @@ export default function Workspace() {
   );
 }
 
-function TerminalSetup({ worktrees, worktreeId, title, onWorktreeChange, onChoose, onCancel }: { worktrees: { id: string; branch: string; path: string }[]; worktreeId: string; title: string; onWorktreeChange: (id: string) => void; onChoose: (kind: "shell" | "codex" | "claude") => void; onCancel?: () => void }) {
+function TerminalSetup({ worktrees, worktreeId, title, onWorktreeChange, onChoose, onCancel, count }: { worktrees: { id: string; branch: string; path: string }[]; worktreeId: string; title: string; onWorktreeChange: (id: string) => void; onChoose: (kind: "shell" | "codex" | "claude") => void; onCancel?: () => void; count?: number }) {
   const selected = worktrees.find((worktree) => worktree.id === worktreeId);
+  const isBatch = count !== undefined;
+  const terminalLabel = count === 1 ? "terminal" : "terminals";
   return <div className="terminal-setup">
     <div className="terminal-setup__head">
       <span className="terminal-setup__slot">{title}</span>
       {onCancel && <button className="terminal__btn" title="Cancel" onClick={onCancel}><X size={11} /></button>}
     </div>
-    <div className="terminal-setup__title">Create terminal</div>
-    <div className="terminal-setup__detail">Choose what this terminal should run.</div>
+    <div className="terminal-setup__title">{isBatch ? `Create ${count} ${terminalLabel}` : "Create terminal"}</div>
+    <div className="terminal-setup__detail">{isBatch ? "Choose what these terminals should run." : "Choose what this terminal should run."}</div>
     <div className="terminal-setup__branch"><span>Run in branch</span><BranchDropdown worktrees={worktrees} selectedId={worktreeId} onChange={onWorktreeChange} /><small title={selected?.path}>{selected?.path}</small></div>
     <div className="terminal-setup__options"><button onClick={() => onChoose("shell")}><TerminalSquare size={17} /><span><b>Blank Terminal</b><small>Start a normal shell</small></span></button><button onClick={() => onChoose("codex")}><ProviderLogo provider="codex" size={17} /><span><b>Codex</b><small>Start Codex CLI</small></span></button><button onClick={() => onChoose("claude")}><ProviderLogo provider="claude" size={17} /><span><b>Claude</b><small>Start Claude Code</small></span></button></div>
   </div>;
@@ -360,7 +357,7 @@ function TerminalDeck({ worktrees, worktreeId, terminals, activeId, onFocusPane,
   terminals: TerminalSession[];
   activeId?: string;
   onFocusPane: (id: string) => void;
-  onSummon: (slot: number) => void;
+  onSummon: (count: number) => void;
   onClose: (id: string) => void;
   onWorktreeChange: (terminalId: string, worktreeId: string) => void;
   onChoose: (terminalId: string, kind: "shell" | "codex" | "claude") => void;
@@ -463,7 +460,8 @@ function TerminalDeck({ worktrees, worktreeId, terminals, activeId, onFocusPane,
       <TerminalSetup
         worktrees={worktrees}
         worktreeId={pendingBatch.worktreeId}
-        title={`Create ${pendingBatch.count} terminals`}
+        title={`Create ${pendingBatch.count} terminal${pendingBatch.count === 1 ? "" : "s"}`}
+        count={pendingBatch.count}
         onWorktreeChange={onBatchWorktreeChange}
         onChoose={onBatchChoose}
         onCancel={onBatchCancel}

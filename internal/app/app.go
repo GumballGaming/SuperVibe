@@ -294,6 +294,10 @@ func sanitizeBranch(b string) string {
 	return strings.Map(repl, b)
 }
 
+func worktreePath(projectPath, branch string) string {
+	return filepath.Join(filepath.Dir(projectPath), ".supervibe", sanitizeBranch(branch))
+}
+
 func (a *App) CreateWorktree(projectID, branch, baseRef string) (*store.Worktree, error) {
 	proj, err := a.getProject(projectID)
 	if err != nil {
@@ -303,7 +307,7 @@ func (a *App) CreateWorktree(projectID, branch, baseRef string) (*store.Worktree
 	if branch == "" {
 		return nil, fmt.Errorf("branch name is required")
 	}
-	dir := filepath.Join(filepath.Dir(proj.Path), filepath.Base(proj.Path)+"-wt", sanitizeBranch(branch))
+	dir := worktreePath(proj.Path, branch)
 	if err := gitx.AddWorktree(proj.Path, dir, branch, baseRef); err != nil {
 		return nil, err
 	}

@@ -65,7 +65,7 @@ const TerminalView = forwardRef<TerminalHandle, TerminalViewProps>(function Term
       fontFamily: '"JetBrains Mono Variable", "Cascadia Mono", Consolas, monospace',
       fontSize: 12.5,
       letterSpacing: 0,
-      lineHeight: 1.2,
+      lineHeight: 1,
       scrollback: 10000,
       theme: { background: "#08080a", foreground: "#d7d9df", cursor: "#f2f4f8", selectionBackground: "#3b4558" },
     });
